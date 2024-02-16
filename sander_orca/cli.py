@@ -1,6 +1,6 @@
 def server():
-    print('Hi, I\'m the server')
+    print("Hi, I'm the server")
 
 
 def orca_client():
-    print('Hi, I\'m the client')
+    print("Hi, I'm the client")
