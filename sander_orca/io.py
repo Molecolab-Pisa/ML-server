@@ -58,7 +58,7 @@ def read_inpfile(path: str) -> Tuple[int, np.ndarray, np.ndarray]:
         elems: atom elements, shape (num_atoms)
     """
     # read the number of atoms
-    with open(path, 'r') as handle:
+    with open(path, "r") as handle:
         line = handle.readline()
         num_atoms = int(line.strip())
 
