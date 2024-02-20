@@ -72,7 +72,7 @@ def read_inpfile(path: str) -> Tuple[int, np.ndarray, np.ndarray]:
 
 
 # ============================================================
-# Function to read the sander input files
+# Function to write the "QM" output files
 # ============================================================
 
 
