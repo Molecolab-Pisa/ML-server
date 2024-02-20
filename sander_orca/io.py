@@ -69,3 +69,48 @@ def read_inpfile(path: str) -> Tuple[int, np.ndarray, np.ndarray]:
     xyz = xyz[:, 1:].astype(np.float64)
 
     return num_atoms, xyz, elems
+
+
+# ============================================================
+# Function to read the sander input files
+# ============================================================
+
+
+def write_engrad(path: str, e_tot: float, grads_qm: np.ndarray) -> None:
+    """writes the .engrad file read by sander
+
+    The .engrad file contains the total energy (e_qm + e_mm + e_qm/mm)
+    and the gradients w.r.t. the qm atoms.
+
+    Args:
+        path: path to the .engrad file
+        e_tot: total energy
+        grads_qm: gradients w.r.t. the qm atoms, shape (num_qm_atoms, 3)
+    """
+    with open(path, "w") as handle:
+        # total energy
+        handle.write("# The current total energy in Eh\n#\n{:22.12f}\n".format(e_tot))
+        # qm gradients
+        handle.write("# The current gradient in Eh/bohr\n#\n")
+        for gradx, grady, gradz in grads_qm:
+            handle.write(
+                "{:16.10f}\n{:16.10f}\n{:16.10f}\n".format(gradx, grady, gradz)
+            )
+
+
+def write_pcgrad(path: str, grads_mm: np.ndarray) -> None:
+    """writes the .pcgrad file read by sander
+
+    The .pcgrad file contains the number of mm atoms and the gradients
+    w.r.t. the mm atoms.
+
+    Args:
+        path: path to the .pcgrad file
+        grads_mm: gradients w.r.t. the mm atoms, shape (num_mm_atoms, 3)
+    """
+    num_mm = grads_mm.shape[0]
+    with open(path, "w") as handle:
+        handle.write("{:d}\n".format(num_mm))
+        # mm gradients
+        for gradx, grady, gradz in grads_mm:
+            handle.write("{:17.12f}{:17.12f}{:17.12f}\n".format(gradx, grady, gradz))
