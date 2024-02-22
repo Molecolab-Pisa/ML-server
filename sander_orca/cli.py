@@ -10,11 +10,24 @@ PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
 # ============================================================
 
 
-def server_cli_parse():
+def server_cli_parse(available_models):
     "command-line interface parser for the server"
-    from argparse import ArgumentParser
+    import argparse
+    from .models import list_available_models
 
-    parser = ArgumentParser(description="ML server")
+    def exitparse(func):
+        """decorator that executes a function and exits
+        the parsing stage prematurely
+        """
+
+        class ExitParser(argparse.Action):
+            def __call__(self, parser, namespace, values, option_string):
+                func()
+                parser.exit()
+
+        return ExitParser
+
+    parser = argparse.ArgumentParser(description="ML server")
 
     # required arguments
     required = parser.add_argument_group("required")
@@ -46,6 +59,14 @@ def server_cli_parse():
         help="Working directory, where input and output files are written. (default: directory where the server is called)",
     )
 
+    optional.add_argument(
+        "--list",
+        required=False,
+        nargs=0,
+        action=exitparse(list_available_models),
+        help="List the available ML models and exit.",
+    )
+
     args = parser.parse_args()
 
     # set a logstream to point to stdout or open a IO stream to file if requested
@@ -59,10 +80,9 @@ def server_cli_parse():
 
 def server():
     from .models import available_models
-    from .io import read_ptchrg, read_inpfile, write_engrad, write_pcgrad
     import numpy as np
 
-    args, parser = server_cli_parse()
+    args, parser = server_cli_parse(available_models)
 
     def logprint(msg):
         "prints to file (stdout or logfile)"

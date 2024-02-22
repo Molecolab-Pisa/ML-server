@@ -141,6 +141,7 @@ class ModelVac1000pt(Model):
 
 class DummyModelZeroGrads(Model):
     "Model that always outputs zero gradients for the qm and mm part"
+
     def load(self):
         pass
 
@@ -176,6 +177,12 @@ available_models = {
     # dummy models:
     "dummy_zerograd": DummyModelZeroGrads,
 }
+
+
+def list_available_models():
+    print("Available models:")
+    for model in available_models:
+        print(f"\t{model}")
 
 
 # ============================================================
