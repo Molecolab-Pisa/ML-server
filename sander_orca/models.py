@@ -13,15 +13,58 @@ from gpx.models import GPR
 from gpx.models.gpr import neg_log_posterior_derivs
 from gpx.mean_functions import zero_mean
 
-from .io import read_inpfile, write_engrad
+from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
+
+# Folder to the parameters of the available models
 AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models")
 
 
 class Model:
+    """base model class
 
-    def __init__(self, workdir):
+    Every model should inherit from this class, as here
+    we implement the basic functions needed for the interface.
+    """
+
+    def __init__(self, workdir: str) -> None:
+        """
+        Args:
+            workdir: path to the working directory
+        """
         self.workdir = workdir
+        # set the paths now
+        self.inpfile = os.path.join(workdir, "inpfile.xyz")
+        self.ptchrg = os.path.join(workdir, "ptchrg.xyz")
+        self.engrad = os.path.join(workdir, "orc_job.engrad")
+        self.pcgrad = os.path.join(workdir, "orc_job.pcgrad")
+
+    def read_sander_xyz(self):
+        "reads the inpfile.xyz and ptchrg.xyz"
+        # try reading the two files, if the file is not there
+        # (e.g., maybe there are no atoms in the mm part)
+        # handle that case and return None
+        try:
+            num_qm, coords_qm, elems_qm = read_inpfile(self.inpfile)
+        except FileNotFoundError:
+            num_qm, coords_qm, elems_qm = None, None, None
+
+        try:
+            num_mm, coords_mm, charges_mm = read_ptchrg(self.ptchrg)
+        except FileNotFoundError:
+            num_mm, coords_mm, charges_mm = None, None, None
+
+        return num_qm, coords_qm, elems_qm, num_mm, coords_mm, charges_mm
+
+    def write_engrad_pcgrad(self, e_tot=None, grads_qm=None, grads_mm=None):
+        "writes the engrad and pcgrad files"
+        if e_tot is not None and grads_qm is not None:
+            pass
+        else:
+            write_engrad(e_tot=e_tot, grads_qm=grads_qm)
+
+        if grads_mm is not None:
+            write_pcgrad(grads_mm=grads_mm)
 
     def load(self):
         raise NotImplementedError
@@ -33,13 +76,16 @@ class Model:
         return self._model.predict_derivs(x, jacobian)
 
 
-class ModelVac1000pt(Model):
+# ============================================================
+# Available models
+# ============================================================
 
+
+class ModelVac1000pt(Model):
     def __init__(self, workdir):
         super().__init__(workdir)
 
     def load(self):
-
         l = 1.0
         s = 0.1
 
@@ -73,17 +119,68 @@ class ModelVac1000pt(Model):
         return forces_vac.squeeze()
 
     def run(self):
-        _, coords_qm, _ = read_inpfile(os.path.join(self.workdir, "inpfile.xyz"))
+        # read input
+        _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
+        # descriptor
         sqd = sq_dist(coords_qm)
         sqd_jac = sq_dist_jac(coords_qm)
 
+        # predict energy and forces
         energies_vac = self.predict_energies(sqd)
         forces_vac = self.predict_forces(sqd, sqd_jac)
-        write_engrad(os.path.join(self.workdir, "orc_job.engrad"), energies_vac, forces_vac)
+
+        # write to file
+        self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
 
 
-available_models = {"model_vac_1000": ModelVac1000pt}
+# ============================================================
+# Dummy models, sometimes useful for testing
+# ============================================================
+
+
+class DummyModelZeroGrads:
+    "Model that always outputs zero gradients for the qm and mm part"
+    def load(self):
+        pass
+
+    def run(self):
+        # read input
+        (
+            num_qm,
+            coords_qm,
+            elems_qm,
+            num_mm,
+            coords_mm,
+            charges_mm,
+        ) = self.read_sander_xyz()
+
+        # compute energy and gradients
+        e_tot = 0.0
+        grads_qm = np.zeros((num_qm, 3)) if num_qm is not None else None
+        grads_mm = np.zeros((num_mm, 3)) if num_mm is not None else None
+
+        # write to file
+        self.write_engrad_pcgrad(e_tot=e_tot, grads_qm=grads_qm, grads_mm=grads_mm)
+
+
+# ============================================================
+# Expose the available models
+# ============================================================
+
+available_models = {
+    # models: vacuum
+    "model_vac_1000": ModelVac1000pt,
+    # models: environment
+    #
+    # dummy models:
+    "dummy_zerograd": DummyModelZeroGrads,
+}
+
+
+# ============================================================
+# Descriptors
+# ============================================================
 
 
 def squared_distances(x1: ArrayLike, x2: ArrayLike) -> Array:
@@ -143,14 +240,11 @@ def sq_dist_jac(coords_qm: ArrayLike):
     jac_dist = jnp.zeros((n_feat, n_qm, 3))
 
     def row_scan(i, jac_dist):
-
         def inner_func(j, jac_dist):
-
             diff = coords_qm[i] - coords_qm[j]
             k = (n_qm * (n_qm - 1) / 2) - (n_qm - i) * ((n_qm - i) - 1) / 2 + j - i - 1
 
             def select(atom, jac_dist):
-
                 return jac_dist.at[k.astype(int), atom].set(
                     jnp.where(atom == i, 2 * diff, jnp.where(atom == j, -2 * diff, 0.0))
                 )
