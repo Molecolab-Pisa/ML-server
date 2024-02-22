@@ -4,14 +4,14 @@ import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
-import gpx
-from gpx.parameters import Parameter
-from gpx.bijectors import Softplus
-from gpx.kernels import SquaredExponential
-from gpx.priors import NormalPrior
-from gpx.models import GPR
-from gpx.models.gpr import neg_log_posterior_derivs
-from gpx.mean_functions import zero_mean
+# import gpx
+# from gpx.parameters import Parameter
+# from gpx.bijectors import Softplus
+# from gpx.kernels import SquaredExponential
+# from gpx.priors import NormalPrior
+# from gpx.models import GPR
+# from gpx.models.gpr import neg_log_posterior_derivs
+# from gpx.mean_functions import zero_mean
 
 from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
@@ -139,7 +139,7 @@ class ModelVac1000pt(Model):
 # ============================================================
 
 
-class DummyModelZeroGrads:
+class DummyModelZeroGrads(Model):
     "Model that always outputs zero gradients for the qm and mm part"
     def load(self):
         pass
