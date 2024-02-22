@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
+import numpy as np
 
 # import gpx
 # from gpx.parameters import Parameter
@@ -59,12 +60,10 @@ class Model:
     def write_engrad_pcgrad(self, e_tot=None, grads_qm=None, grads_mm=None):
         "writes the engrad and pcgrad files"
         if e_tot is not None and grads_qm is not None:
-            pass
-        else:
-            write_engrad(e_tot=e_tot, grads_qm=grads_qm)
+            write_engrad(self.engrad, e_tot=e_tot, grads_qm=grads_qm)
 
         if grads_mm is not None:
-            write_pcgrad(grads_mm=grads_mm)
+            write_pcgrad(self.pcgrad, grads_mm=grads_mm)
 
     def load(self):
         raise NotImplementedError
@@ -143,7 +142,7 @@ class DummyModelZeroGrads(Model):
     "Model that always outputs zero gradients for the qm and mm part"
 
     def load(self):
-        pass
+        return self
 
     def run(self):
         # read input

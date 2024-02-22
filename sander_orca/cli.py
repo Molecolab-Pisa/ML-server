@@ -102,6 +102,9 @@ def server():
         s.listen()
 
         # load the requested model
+        if not args.model in available_models.keys():
+            raise ValueError("requested model is not available")
+
         model = available_models[args.model](args.workdir).load()
 
         # keep listening and accepting connections from clients
