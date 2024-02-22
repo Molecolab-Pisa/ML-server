@@ -3,7 +3,21 @@ import os
 import socket
 
 HOST = "127.0.0.1"  # Standard loopback interface address (localhost)
-PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
+DEFAULT_PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def get_port():
+    port = os.getenv("SANDER_ORCA_PORT")
+    if port is None:
+        port = DEFAULT_PORT
+    else:
+        port = int(port)
+    return port
+
 
 # ============================================================
 # Server
@@ -94,6 +108,10 @@ def server():
     for arg in vars(args):
         logprint("\t{:40s} = {:40s}".format(arg, str(getattr(args, arg))))
 
+    # read the port
+    PORT = get_port()
+    logprint(f"Requested opening a socket on {HOST}:{PORT}")
+
     # AF_INET: internet address family for IPv4
     # SOCK_STREAM: Transmission Control Protocol (TCP) socket type
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -148,6 +166,7 @@ def server():
 
 def orca_client():
     "client sending a model-run request to the server"
+    PORT = get_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         s.sendall(b"model-run")
@@ -156,6 +175,7 @@ def orca_client():
 
 def stop_server():
     "client sending a server-stop request to the server"
+    PORT = get_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         s.sendall(b"server-stop")
