@@ -24,7 +24,7 @@ def get_port():
 # ============================================================
 
 
-def server_cli_parse(available_models):
+def server_cli_parse():
     "command-line interface parser for the server"
     import argparse
     from .models import list_available_models
@@ -96,7 +96,7 @@ def server():
     from .models import available_models
     import numpy as np
 
-    args, parser = server_cli_parse(available_models)
+    args, parser = server_cli_parse()
 
     def logprint(msg):
         "prints to file (stdout or logfile)"
