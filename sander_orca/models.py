@@ -112,13 +112,69 @@ class ModelVacGS(Model):
         return self
 
     def predict_energies(self, x):
-        pred = super().predict_energies(x)/Bohr2Ang + self.constant
+        pred = super().predict_energies(x) / Bohr2Ang + self.constant
         return pred.squeeze()
 
     def predict_forces(self, x, jacobian):
         pred = super().predict_forces(x, jacobian)
         forces_vac = pred.reshape(1, -1, 3)
         return forces_vac.squeeze()
+
+    def run(self):
+        # read input
+        _, coords_qm, _, _, _, _ = self.read_sander_xyz()
+
+        # descriptor
+        ind = inv_dist(coords_qm)
+        ind_jac = inv_dist_jac(coords_qm)
+
+        # predict energy and forces
+        energies_vac = self.predict_energies(ind)
+        forces_vac = self.predict_forces(ind, ind_jac)
+
+        # write to file
+        self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+
+
+class ModelVacES(Model):
+    def __init__(self, workdir):
+        super().__init__(workdir)
+
+    def load(self):
+        l = 1.0
+        s = 0.1
+
+        lengthscale = Parameter(
+            l, trainable=False, bijector=Softplus(), prior=NormalPrior()
+        )
+
+        sigma = Parameter(s, trainable=False, bijector=Softplus(), prior=NormalPrior())
+
+        kernel_params = dict(lengthscale=lengthscale)
+
+        model = GPR(
+            kernel=Matern52(),
+            kernel_params=kernel_params,
+            mean_function=zero_mean,
+            sigma=sigma,
+        )
+
+        model.load(
+            os.path.join(AVAIL_MODELS_DIR, "modelvaces.npz")
+        )  # modelenv1000ptnew
+        model.print()
+        self._model = model
+        self.constant = model.state.constant
+        return self
+
+    def predict_energies(self, x):
+        pred = super().predict_energies(x) + self.constant
+        return pred.squeeze() / H2kcal
+
+    def predict_forces(self, x, jacobian):
+        pred = super().predict_forces(x, jacobian)
+        forces_vac = pred.reshape(1, -1, 3)
+        return forces_vac.squeeze() / H2kcal * Bohr2Ang
 
     def run(self):
         # read input
@@ -174,6 +230,7 @@ class DummyModelZeroGrads(Model):
 available_models = {
     # models: vacuum
     "model_vac_gs": ModelVacGS,
+    "model_vac_es": ModelVacES,
     # models: environment
     #
     # dummy models:
@@ -342,7 +399,7 @@ def elec_pot(
     dd = squared_distances(coords_qm, coords_mm) ** 0.5
     pot = compute_potential(charges_mm, dd)
 
-    return jnp.expand_dims(pot,axis=0)
+    return jnp.expand_dims(pot, axis=0)
 
 
 @jax.jit
@@ -363,7 +420,7 @@ def elec_pot_jac_qm(
     n_qm, _ = coords_qm.shape
     jac = jax.jacrev(elec_pot, argnums=0)(coords_qm, coords_mm, charges_mm)
 
-    return jnp.expand_dims(jac.reshape(n_qm, n_qm * 3),axis=0)
+    return jnp.expand_dims(jac.reshape(n_qm, n_qm * 3), axis=0)
 
 
 @jax.jit
@@ -385,7 +442,7 @@ def elec_pot_jac_mm(
     n_mm, _ = coords_mm.shape
     jac = jax.jacrev(elec_pot, argnums=1)(coords_qm, coords_mm, charges_mm)
 
-    return jnp.expand_dims(jac.reshape(n_atoms_qm, n_mm * 3),axis=0)
+    return jnp.expand_dims(jac.reshape(n_atoms_qm, n_mm * 3), axis=0)
 
 
 def compute_potential(charges_mm: ArrayLike, dd: ArrayLike) -> Array:
