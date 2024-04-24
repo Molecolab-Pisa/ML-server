@@ -87,15 +87,10 @@ def write_engrad(path: str, e_tot: float, grads_qm: np.ndarray) -> None:
         e_tot: total energy
         grads_qm: gradients w.r.t. the qm atoms, shape (num_qm_atoms, 3)
     """
-    with open(path, "w") as handle:
-        # total energy
-        handle.write("# The current total energy in Eh\n#\n{:22.12f}\n".format(e_tot))
-        # qm gradients
-        handle.write("# The current gradient in Eh/bohr\n#\n")
-        for gradx, grady, gradz in grads_qm:
-            handle.write(
-                "{:16.10f}\n{:16.10f}\n{:16.10f}\n".format(gradx, grady, gradz)
-            )
+    header = "# The current total energy in Eh\n#\n{:22.12f}\n# The current gradient in Eh/bohr\n#".format(
+        e_tot
+    )
+    np.savetxt(path, grads_qm.reshape(-1), fmt="%16.10f", header=header, comments="")
 
 
 def write_pcgrad(path: str, grads_mm: np.ndarray) -> None:
@@ -109,8 +104,4 @@ def write_pcgrad(path: str, grads_mm: np.ndarray) -> None:
         grads_mm: gradients w.r.t. the mm atoms, shape (num_mm_atoms, 3)
     """
     num_mm = grads_mm.shape[0]
-    with open(path, "w") as handle:
-        handle.write("{:d}\n".format(num_mm))
-        # mm gradients
-        for gradx, grady, gradz in grads_mm:
-            handle.write("{:17.12f}{:17.12f}{:17.12f}\n".format(gradx, grady, gradz))
+    np.savetxt(path, grads_mm, fmt="%17.12f", header="%d" % num_mm, comments="")
