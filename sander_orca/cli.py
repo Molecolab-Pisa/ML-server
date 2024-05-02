@@ -47,15 +47,23 @@ def server_cli_parse():
     required = parser.add_argument_group("required")
 
     required.add_argument(
-        "--model",
+        "--model_vac",
         required=True,
         default=None,
         type=str,
-        help="Model string selector (e.g., model_vac_1000)",
+        help="QM model string selector (e.g., model_vac_gs)",
     )
 
     # optional arguments
     optional = parser.add_argument_group("optional")
+
+    optional.add_argument(
+        "--model_env",
+        required=None,
+        default=None,
+        type=str,
+        help="Environment model string selector (e.g., model_env_gs)",
+    )
 
     optional.add_argument(
         "--logfile",
@@ -120,10 +128,16 @@ def server():
         s.listen()
 
         # load the requested model
-        if not args.model in available_models.keys():
-            raise ValueError("requested model is not available")
+        if not args.model_vac in available_models.keys():
+            raise ValueError("requested QM model is not available")
 
-        model = available_models[args.model](args.workdir).load()
+        if args.model_env is not None:
+            if not args.model_env in available_models.keys():
+                raise ValueError("requested environment model is not available")
+            model_vac = available_models[args.model_vac](args.workdir).load()
+            model = available_models[args.model_env](args.workdir, model_vac).load()
+        else:
+            model = available_models[args.model_vac](args.workdir).load()
 
         # keep listening and accepting connections from clients
         while True:

@@ -11,10 +11,10 @@ from gpx.bijectors import Softplus
 from gpx.kernels import Matern52
 from gpx.priors import NormalPrior
 from gpx.models import GPR
-from gpx.models.gpr import neg_log_posterior_derivs
-from gpx.mean_functions import zero_mean
+from gpx.mean_functions import zero_mean, data_mean
 
 from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
+from .energiesforces import EnergiesForces
 
 
 # Folder to the parameters of the available models
@@ -191,6 +191,122 @@ class ModelVacES(Model):
         # write to file
         self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
 
+class ModelEnvGS(Model):
+    def __init__(self, workdir, model_vac = None):
+        super().__init__(workdir)
+        if model_vac is None:
+            raise ValueError("You need to specify the vacuum model.")
+        else:
+            self.model_vac = model_vac
+
+    def load(self):
+        s = 1e-4
+        k2_l = 10.
+
+        sigma = Parameter(s,
+                          trainable=True,
+                          bijector=Softplus(),
+                          prior=NormalPrior(loc=s,scale=0.01),
+                         )
+        
+        k2_lengthscale = dict(lengthscale=Parameter(k2_l,
+                                   trainable=True,
+                                   bijector=Softplus(),
+                                   prior=NormalPrior(loc=k2_l,scale=10.)
+                                  ))
+        
+        kernel_params ={'kernel1': {},
+                        'kernel2': k2_lengthscale}
+        
+        ind_dim = 378
+        n_feat = 378 + 28
+        ind_active_dims = jnp.arange(0,ind_dim)
+        pot_active_dims = jnp.arange(ind_dim,n_feat)
+
+        k1 = Linear(active_dims=pot_active_dims)
+        k2 = Matern52(active_dims=ind_active_dims)
+        
+        k = Prod(k1,k2)
+
+        model = EnergiesForces(kernel=k,
+                            kernel_params=kernel_params,
+                            sigma=sigma,
+                            mean_function=data_mean
+                           )
+
+        model.load(os.path.join(AVAIL_MODELS_DIR, "modelenvgs.npz"))
+        model.print()
+        self._model = model
+        self.mean_pot = model.state.mean_pot
+        return self
+
+    def predict(self, x, jacobian_qm, jacobian_mm):
+        energy, forces_qm, forces_mm = self._model.predict(x, jacobian_qm, jacobian_mm)
+        energy = energy.squeeze()/H2kcal
+        forces_qm = forces_qm/H2kcal*Bohr2Ang
+        forces_mm = forces_mm/H2kcal*Bohr2Ang
+        return energy, forces_qm, forces_mm
+
+    def get_input(self, qm_descr, qm_jac, mm_descr, mm_jac_qm, mm_jac_mm):
+        mm_descr = mm_descr - self.mean_pot
+        descr = jnp.concatenate((qm_descr, mm_descr),axis=-1)
+        jacobian_qm = jnp.concatenate((qm_jac, mm_jac_qm), axis=1)
+        nfeat_qm = qm_jac.shape[1]
+        jv_mm = mm_jac_mm.shape[2]
+        jacobian_mm = jnp.concatenate((jnp.zeros((1,nfeat_qm,jv_mm)), mm_jac_mm), axis=1)
+        return descr, jacobian_qm, jacobian_mm
+
+    def run(self):
+        # read input
+        start = time.perf_counter()
+        _, coords_qm, elems_qm, _, coords_mm, charges_mm = self.read_sander_xyz()
+        n_qm = coords_qm.shape[0]
+
+        tmp = time.perf_counter() - start
+        print("reading coordinates {:s}".format(str(tmp)))
+
+        # descriptor for the QM part
+        ind = inv_dist(coords_qm)
+        ind_jac = inv_dist_jac(coords_qm)
+        print("cm descr {:s}".format(str(time.perf_counter()-tmp-start))) 
+        tmp = time.perf_counter() - start
+
+        # descriptor for the environment
+        pot = elec_pot(coords_qm, coords_mm, charges_mm)
+        pot_zero_mean = pot - pot.mean(axis=1)
+        pot_jac_qm = elec_pot_jac_qm(coords_qm, coords_mm, charges_mm)
+        pot_jac_mm = elec_pot_jac_mm(coords_qm, coords_mm, charges_mm)
+        print("mm descr {:s}".format(str(time.perf_counter()-tmp-start)))
+        tmp = time.perf_counter() - start
+
+        # concatenate descriptors
+        descr, jacobian_qm, jacobian_mm = self.get_input(ind, ind_jac, pot_zero_mean, pot_jac_qm, pot_jac_mm)
+        print("concatenate descr {:s}".format(str(time.perf_counter()-tmp-start)))
+        tmp = time.perf_counter() - start
+
+        # predict energy and forces in vacuum
+        energies_vac = self.model_vac.predict_energies(ind)
+        forces_vac = self.model_vac.predict_forces(ind, ind_jac)
+        print("qm pred {:s}".format(str(time.perf_counter()-tmp-start))) 
+        tmp = time.perf_counter() - start
+
+        # predict QM/MM interaction energy and forces
+        energies_env, forces_env_qm, forces_env_mm = self.predict(descr,jacobian_qm,jacobian_mm)   
+        print("mm pred {:s}".format(str(time.perf_counter()-tmp-start)))
+        tmp = time.perf_counter() - start
+
+        # combine QM vacuum and QM/MM contributions
+        energies = energies_vac + energies_env
+        forces_qm = forces_vac + forces_env_qm
+        forces_mm = forces_env_mm
+        print("sum pred {:s}".format(str(time.perf_counter()-tmp-start)))
+        tmp = time.perf_counter() - start
+
+        # write to file
+        self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+        print("write pred {:s}".format(str(time.perf_counter()-tmp-start)))
+        print("tot {:s}".format(str(time.perf_counter()-start)))
+
 
 # ============================================================
 # Dummy models, sometimes useful for testing
@@ -232,6 +348,7 @@ available_models = {
     "model_vac_gs": ModelVacGS,
     "model_vac_es": ModelVacES,
     # models: environment
+    "model_env_gs": ModelEnvGS,
     #
     # dummy models:
     "dummy_zerograd": DummyModelZeroGrads,
