@@ -1,7 +1,8 @@
 from jax import jit, Array
+from jax.typing import ArrayLike
 from functools import partial
-from typing import Any, Dict, Callable
-from gpx.parameters import ModelState
+from typing import Any, Dict, Tuple, Callable
+from gpx.parameters import ModelState, Parameter
 from gpx.models._gpr import _A_lhs, _A_derivs_lhs
 
 ParameterDict = Dict[str, Parameter]
@@ -13,17 +14,20 @@ class EnergiesForces:
             kernel: Callable,
             mean_function: Callable,
             kernel_params: Dict[str, Parameter] = None,
-            sigma: Parameter = None,
+            sigma_energies: Parameter = None,
+            sigma_forces: Parameter = None
     ):
-        params = {"kernel_params": kernel_params, "sigma": sigma}
+        params = {"kernel_params": kernel_params, "sigma_energies": sigma_energies, "sigma_forces": sigma_forces}
         opt = {
             "x_train": None,
             "jacobian_train": None,
+            "jaccoef": None,
             "y_train": None,
             "y_derivs_train": None,
             "is_fitted": False,
             "is_fitted_derivs": False,
             "c": None,
+            "c_energies": None,
             "mu": None,
         }
 
