@@ -123,9 +123,10 @@ class ModelVacGS(Model):
         forces_vac = pred.reshape(1, -1, 3)
         return forces_vac.squeeze()
 
-    def run(self):
+    def run(self, coords_qm=None, filebased=True):
+        if filebased:
         # read input
-        _, coords_qm, _, _, _, _ = self.read_sander_xyz()
+            _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
         # descriptor
         ind = inv_dist(coords_qm)
@@ -135,9 +136,11 @@ class ModelVacGS(Model):
         energies_vac = self.predict_energies(ind)
         forces_vac = self.predict_forces(ind, ind_jac)
 
+        if filebased:
         # write to file
-        self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
-
+            self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+        else:
+            return energies_vac, forces_vac
 
 class ModelVacES(Model):
     def __init__(self, workdir):
@@ -179,9 +182,11 @@ class ModelVacES(Model):
         forces_vac = pred.reshape(1, -1, 3)
         return forces_vac.squeeze() 
 
-    def run(self):
+    def run(self, coords_qm=None, filebased=True):
+
+        if filebased:
         # read input
-        _, coords_qm, _, _, _, _ = self.read_sander_xyz()
+            _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
         # descriptor
         ind = inv_dist(coords_qm)
@@ -191,8 +196,12 @@ class ModelVacES(Model):
         energies_vac = self.predict_energies(ind)
         forces_vac = self.predict_forces(ind, ind_jac)
 
+        if filebased:
         # write to file
-        self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+            self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+        else:
+            return energies_vac, forces_vac
+
 
 class ModelEnvGS(Model):
     def __init__(self, workdir, model_vac = None):
@@ -265,10 +274,13 @@ class ModelEnvGS(Model):
         jacobian_mm = mm_jac_mm 
         return descr, jacobian_qm, jacobian_mm
 
-    def run(self):
+    def run(self, coords_qm=None,
+            coords_mm=None,
+            charges_mm=None,
+            filebased=True):
+        if filebased:
         # read input
-        start = time.perf_counter()
-        _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
+            _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
         n_qm = coords_qm.shape[0]
 
         # descriptor for the QM part
@@ -295,8 +307,11 @@ class ModelEnvGS(Model):
         forces_qm = forces_vac + forces_env_qm
         forces_mm = forces_env_mm
 
+        if filebased:
         # write to file
-        self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+            self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+        else:
+            return energies, forces_qm, forces_mm
 
 class ModelEnvES(Model):
     def __init__(self, workdir, model_vac = None):
@@ -369,10 +384,15 @@ class ModelEnvES(Model):
         jacobian_mm = mm_jac_mm
         return descr, jacobian_qm, jacobian_mm
 
-    def run(self):
+    def run(self, coords_qm=None, 
+            coords_mm=None, 
+            charges_mm=None, 
+            filebased=True):
+
+        if filebased:
         # read input
-        start = time.perf_counter()
-        _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
+            _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
+
         n_qm = coords_qm.shape[0]
 
         # descriptor for the QM part
@@ -399,8 +419,11 @@ class ModelEnvES(Model):
         forces_qm = forces_vac + forces_env_qm
         forces_mm = forces_env_mm
 
+        if filebased:
         # write to file
-        self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+            self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+        else:
+            return energies, forces_qm, forces_mm
 
 # ============================================================
 # Dummy models, sometimes useful for testing

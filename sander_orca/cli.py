@@ -66,6 +66,13 @@ def server_cli_parse():
     )
 
     optional.add_argument(
+        "--filebased",
+        action='store_true',
+        required=None,
+        help="Use file based interface",
+    )
+
+    optional.add_argument(
         "--logfile",
         required=False,
         default=None,
@@ -103,6 +110,9 @@ def server_cli_parse():
 def server():
     from .models import available_models
     import numpy as np
+    import jax.numpy as jnp
+    import struct
+    dtype = np.float64
 
     args, parser = server_cli_parse()
 
@@ -151,27 +161,88 @@ def server():
 
                 # keep receiving input from the client
                 while True:
-                    inp = conn.recv(1024)
+                    inp = conn.recv(12)
                     if not inp:
                         break
 
                     # check whether a model-run is requested
-                    cmd = inp.decode()
+                    cmd = inp.decode().strip()
                     if cmd == "model-run":
                         logprint(
-                            "Requested calculation by sander.\nReading the ptchrg and inpfile..."
+                            "Requested calculation by sander.\n"
                         )
 
+                        if args.filebased:
                         # read input, predict, and write to file
-                        model.run()
+                            model.run()
+                        else:
+                        # receive data via socket
+                            system_data = jnp.zeros((2,1),dtype)
+                            system_data = recvall(conn,system_data)
+                            nqm, nmm = int(system_data[0]), int(system_data[1])
+                            sh_qm = (nqm,3)
+                            coords_qm = jnp.zeros(sh_qm,dtype)
+                            coords_qm = recvall(conn,coords_qm)
+                            if args.model_env is not None:
+                                sh_mm = (nmm,4)
+                                mmcoordchg = jnp.zeros(sh_mm,dtype)
+                                mmcoordchg = recvall(conn,mmcoordchg)
+                                coords_mm = mmcoordchg[:,:3] 
+                                charges_mm = mmcoordchg[:,3] 
+                        # run the prediction
+                                energy, grad_qm, grad_mm = model.run(coords_qm,
+                                                                     coords_mm,
+                                                                     charges_mm,
+                                                                     filebased=args.filebased)
+#                                conn.sendall(grad_qm)
+                                conn.sendall(grad_mm)
+                            else:
+                                energy, grad_qm = model.run(coords_qm,filebased=args.filebased)
+
+                            conn.sendall(grad_qm)
+                            conn.sendall(struct.pack('<d',energy))
 
                         # tell the client that we have finished
-                        conn.sendall(b"model-fin")
+                        conn.sendall(b"model-fin   ")
 
                     elif cmd == "server-stop":
                         logprint("Received request of server stop.\nStopping now...")
                         sys.exit(0)
 
+# ============================================================
+# Auxiliary functions
+# ============================================================
+
+def recvall(sock, dest):
+    """Gets the data in dest. Dest is the empty data array
+
+    Args:
+       dest: Object to be read into.
+    Raises:
+       Disconnected: Raised if client is disconnected.
+    Returns:
+       The data read from the socket to be read into dest.
+    """
+    import numpy as np
+    buf = np.zeros(0,np.byte)
+    blen = dest.itemsize * dest.size
+    if (blen > len(buf)):
+        buf.resize(blen)
+    bpos = 0
+
+    while bpos < blen:
+        timeout = False
+        # post-2.5 version: slightly more compact for modern python versions
+        try:
+          bpart = 1
+          bpart = sock.recv_into(buf[bpos:], blen-bpos)
+        except socket.timeout:
+          print(" @SOCKET:   Timeout in status recvall, trying again!")
+          timeout = True
+          pass
+        bpos += bpart
+
+    return np.frombuffer(buf[0:blen], dest.dtype).reshape(dest.shape)
 
 # ============================================================
 # Clients
@@ -183,8 +254,8 @@ def orca_client():
     PORT = get_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
-        s.sendall(b"model-run")
-        out = s.recv(1024)
+        s.sendall(b"model-run   ")
+        out = s.recv(12)
 
 
 def stop_server():
