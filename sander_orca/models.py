@@ -1,24 +1,21 @@
 import os
+from functools import partial
+from typing import Dict
+
 import jax
 import jax.numpy as jnp
+import numpy as np
+from gpx.bijectors import Softplus
+from gpx.kernels import Linear, Matern52, Prod
+from gpx.mean_functions import zero_mean
+from gpx.models import GPR
+from gpx.parameters import ModelState, Parameter
+from gpx.priors import NormalPrior
 from jax import Array, jit
 from jax.typing import ArrayLike
-import numpy as np
-from typing import Dict
-from functools import partial
 
-import gpx
-from gpx.parameters import Parameter, ModelState
-from gpx.bijectors import Softplus
-from gpx.kernels import Matern52, Linear, Prod
-from gpx.priors import NormalPrior
-from gpx.models import GPR
-from gpx.mean_functions import zero_mean, data_mean
-
-from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 from .energiesforces import EnergiesForces
-import time
-
+from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
 # Folder to the parameters of the available models
 AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models")
@@ -114,18 +111,23 @@ class ModelVacGS(Model):
         self.constant = model.state.constant
         return self
 
-    def predict_energies(self, x):
-        pred = super().predict_energies(x) / Bohr2Ang + self.constant
-        return pred.squeeze()
+    def predict(self, ind, ind_jac):
+        energy, forces = predict_vac(self._model, ind, ind_jac)
+        energy = energy.squeeze() / Bohr2Ang + self.constant
+        return energy, forces
 
-    def predict_forces(self, x, jacobian):
-        pred = super().predict_forces(x, jacobian)
-        forces_vac = pred.reshape(1, -1, 3)
-        return forces_vac.squeeze()
+    #    def predict_energies(self, x):
+    #        pred = super().predict_energies(x) / Bohr2Ang + self.constant
+    #        return pred.squeeze()
+    #
+    #    def predict_forces(self, x, jacobian):
+    #        pred = super().predict_forces(x, jacobian)
+    #        forces_vac = pred.reshape(1, -1, 3)
+    #        return forces_vac.squeeze()
 
     def run(self, coords_qm=None, filebased=True):
         if filebased:
-        # read input
+            # read input
             _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
         # descriptor
@@ -133,14 +135,16 @@ class ModelVacGS(Model):
         ind_jac = inv_dist_jac(coords_qm)
 
         # predict energy and forces
-        energies_vac = self.predict_energies(ind)
-        forces_vac = self.predict_forces(ind, ind_jac)
+        energies_vac, forces_vac = self.predict(ind, ind_jac)
 
         if filebased:
-        # write to file
-            self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+            # write to file
+            self.write_engrad_pcgrad(
+                e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None
+            )
         else:
             return energies_vac, forces_vac
+
 
 class ModelVacES(Model):
     def __init__(self, workdir):
@@ -165,27 +169,30 @@ class ModelVacES(Model):
             sigma=sigma,
         )
 
-        model.load(
-            os.path.join(AVAIL_MODELS_DIR, "modelvaces.npz")
-        )  # pure model
+        model.load(os.path.join(AVAIL_MODELS_DIR, "modelvaces.npz"))  # pure model
         model.print()
         self._model = model
         self.constant = model.state.constant
         return self
 
-    def predict_energies(self, x):
-        pred = super().predict_energies(x) / Bohr2Ang + self.constant
-        return pred.squeeze()
+    #    def predict_energies(self, x):
+    #        pred = super().predict_energies(x) / Bohr2Ang + self.constant
+    #        return pred.squeeze()
+    #
+    #    def predict_forces(self, x, jacobian):
+    #        pred = super().predict_forces(x, jacobian)
+    #        forces_vac = pred.reshape(1, -1, 3)
+    #        return forces_vac.squeeze()
 
-    def predict_forces(self, x, jacobian):
-        pred = super().predict_forces(x, jacobian)
-        forces_vac = pred.reshape(1, -1, 3)
-        return forces_vac.squeeze() 
+    def predict(self, ind, ind_jac):
+        energy, forces = predict_vac(self._model, ind, ind_jac)
+        energy = energy.squeeze() / Bohr2Ang + self.constant
+        return energy, forces
 
     def run(self, coords_qm=None, filebased=True):
 
         if filebased:
-        # read input
+            # read input
             _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
         # descriptor
@@ -193,18 +200,19 @@ class ModelVacES(Model):
         ind_jac = inv_dist_jac(coords_qm)
 
         # predict energy and forces
-        energies_vac = self.predict_energies(ind)
-        forces_vac = self.predict_forces(ind, ind_jac)
+        energies_vac, forces_vac = self.predict(ind, ind_jac)
 
         if filebased:
-        # write to file
-            self.write_engrad_pcgrad(e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None)
+            # write to file
+            self.write_engrad_pcgrad(
+                e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None
+            )
         else:
             return energies_vac, forces_vac
 
 
 class ModelEnvGS(Model):
-    def __init__(self, workdir, model_vac = None):
+    def __init__(self, workdir, model_vac=None):
         super().__init__(workdir)
         if model_vac is None:
             raise ValueError("You need to specify the vacuum model.")
@@ -212,47 +220,52 @@ class ModelEnvGS(Model):
             self.model_vac = model_vac
 
     def load(self):
-        s_energies = 1e-5
-        s_forces = 1e-4
-        k2_l = 10.
+        s_energies = 1e-3
+        s_forces = 1e-3
+        k2_l = 5.0
 
-        sigma_energies = Parameter(s_energies,
-                          trainable=True,
-                          bijector=Softplus(),
-                          prior=NormalPrior(loc=s_energies,scale=0.01),
-                         )
+        sigma_energies = Parameter(
+            s_energies,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(loc=s_energies, scale=0.01),
+        )
 
-        sigma_forces = Parameter(s_forces,
-                          trainable=True,
-                          bijector=Softplus(),
-                          prior=NormalPrior(loc=s_forces,scale=0.01),
-                         )
-        
-        k2_lengthscale = dict(lengthscale=Parameter(k2_l,
-                                   trainable=True,
-                                   bijector=Softplus(),
-                                   prior=NormalPrior(loc=k2_l,scale=10.)
-                                  ))
-        
-        kernel_params ={'kernel1': {},
-                        'kernel2': k2_lengthscale}
-        
+        sigma_forces = Parameter(
+            s_forces,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(loc=s_forces, scale=0.01),
+        )
+
+        k2_lengthscale = dict(
+            lengthscale=Parameter(
+                k2_l,
+                trainable=True,
+                bijector=Softplus(),
+                prior=NormalPrior(loc=k2_l, scale=10.0),
+            )
+        )
+
+        kernel_params = {"kernel1": {}, "kernel2": k2_lengthscale}
+
         ind_dim = 378
         n_feat = 378 + 28
-        ind_active_dims = jnp.arange(0,ind_dim)
-        pot_active_dims = jnp.arange(ind_dim,n_feat)
+        ind_active_dims = jnp.arange(0, ind_dim)
+        pot_active_dims = jnp.arange(ind_dim, n_feat)
 
         k1 = Linear(active_dims=pot_active_dims)
         k2 = Matern52(active_dims=ind_active_dims)
-        
-        k = Prod(k1,k2)
 
-        model = EnergiesForces(kernel=k,
-                            kernel_params=kernel_params,
-                            sigma_energies=sigma_energies,
-                            sigma_forces=sigma_forces,
-                            mean_function=zero_mean
-                           )
+        k = Prod(k1, k2)
+
+        model = EnergiesForces(
+            kernel=k,
+            kernel_params=kernel_params,
+            sigma_energies=sigma_energies,
+            sigma_forces=sigma_forces,
+            mean_function=zero_mean,
+        )
 
         model.load(os.path.join(AVAIL_MODELS_DIR, "modelenvgs.npz"))
         model.print()
@@ -260,28 +273,24 @@ class ModelEnvGS(Model):
         return self
 
     def predict(self, x, jacobian_qm, jacobian_mm):
-        energy, forces_qm, forces_mm = predict_env(self._model, x, jacobian_qm, jacobian_mm)
-        energy = energy.squeeze()/H2kcal
-        forces_qm = forces_qm/H2kcal*Bohr2Ang
-        forces_mm = forces_mm/H2kcal*Bohr2Ang
+        energy, forces_qm, forces_mm = predict_env(
+            self._model, x, jacobian_qm, jacobian_mm
+        )
+        energy = energy.squeeze() / H2kcal
+        forces_qm = forces_qm / H2kcal * Bohr2Ang
+        forces_mm = forces_mm / H2kcal * Bohr2Ang
         return energy, forces_qm, forces_mm
 
     def get_input(self, qm_descr, qm_jac, mm_descr, mm_jac_qm, mm_jac_mm):
-        descr = jnp.concatenate((qm_descr, mm_descr),axis=-1)
+        descr = jnp.concatenate((qm_descr, mm_descr), axis=-1)
         jacobian_qm = jnp.concatenate((qm_jac, mm_jac_qm), axis=1)
-        nfeat_qm = qm_jac.shape[1]
-        jv_mm = mm_jac_mm.shape[2]
-        jacobian_mm = mm_jac_mm 
+        jacobian_mm = mm_jac_mm
         return descr, jacobian_qm, jacobian_mm
 
-    def run(self, coords_qm=None,
-            coords_mm=None,
-            charges_mm=None,
-            filebased=True):
+    def run(self, coords_qm=None, coords_mm=None, charges_mm=None, filebased=True):
         if filebased:
-        # read input
+            # read input
             _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
-        n_qm = coords_qm.shape[0]
 
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
@@ -289,18 +298,20 @@ class ModelEnvGS(Model):
 
         # descriptor for the environment
         pot = elec_pot(coords_qm, coords_mm, charges_mm)
-        pot_jac_qm = elec_pot_jac_qm(coords_qm, coords_mm, charges_mm)
-        pot_jac_mm = elec_pot_jac_mm(coords_qm, coords_mm, charges_mm)
+        pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
 
         # concatenate descriptors
-        descr, jacobian_qm, jacobian_mm = self.get_input(ind, ind_jac, pot, pot_jac_qm, pot_jac_mm)
+        descr, jacobian_qm, jacobian_mm = self.get_input(
+            ind, ind_jac, pot, pot_jac_qm, pot_jac_mm
+        )
 
         # predict energy and forces in vacuum
-        energies_vac = self.model_vac.predict_energies(ind)
-        forces_vac = self.model_vac.predict_forces(ind, ind_jac)
+        energies_vac, forces_vac = self.model_vac.predict(ind, ind_jac)
 
         # predict QM/MM interaction energy and forces
-        energies_env, forces_env_qm, forces_env_mm = self.predict(descr,jacobian_qm,jacobian_mm)   
+        energies_env, forces_env_qm, forces_env_mm = self.predict(
+            descr, jacobian_qm, jacobian_mm
+        )
 
         # combine QM vacuum and QM/MM contributions
         energies = energies_vac + energies_env
@@ -308,13 +319,16 @@ class ModelEnvGS(Model):
         forces_mm = forces_env_mm
 
         if filebased:
-        # write to file
-            self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+            # write to file
+            self.write_engrad_pcgrad(
+                e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm
+            )
         else:
             return energies, forces_qm, forces_mm
 
+
 class ModelEnvES(Model):
-    def __init__(self, workdir, model_vac = None):
+    def __init__(self, workdir, model_vac=None):
         super().__init__(workdir)
         if model_vac is None:
             raise ValueError("You need to specify the vacuum model.")
@@ -322,78 +336,78 @@ class ModelEnvES(Model):
             self.model_vac = model_vac
 
     def load(self):
-        s_energies = 1e-5
-        s_forces = 1e-4
-        k2_l = 10.
+        s_energies = 1e-3
+        s_forces = 1e-3
+        k2_l = 5.0
 
-        sigma_energies = Parameter(s_energies,
-                          trainable=True,
-                          bijector=Softplus(),
-                          prior=NormalPrior(loc=s_energies,scale=0.01),
-                         )
+        sigma_energies = Parameter(
+            s_energies,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(loc=s_energies, scale=0.01),
+        )
 
-        sigma_forces = Parameter(s_forces,
-                          trainable=True,
-                          bijector=Softplus(),
-                          prior=NormalPrior(loc=s_forces,scale=0.01),
-                         )
-        
-        k2_lengthscale = dict(lengthscale=Parameter(k2_l,
-                                   trainable=True,
-                                   bijector=Softplus(),
-                                   prior=NormalPrior(loc=k2_l,scale=10.)
-                                  ))
-        
-        kernel_params ={'kernel1': {},
-                        'kernel2': k2_lengthscale}
-        
+        sigma_forces = Parameter(
+            s_forces,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(loc=s_forces, scale=0.01),
+        )
+
+        k2_lengthscale = dict(
+            lengthscale=Parameter(
+                k2_l,
+                trainable=True,
+                bijector=Softplus(),
+                prior=NormalPrior(loc=k2_l, scale=10.0),
+            )
+        )
+
+        kernel_params = {"kernel1": {}, "kernel2": k2_lengthscale}
+
         ind_dim = 378
         n_feat = 378 + 28
-        ind_active_dims = jnp.arange(0,ind_dim)
-        pot_active_dims = jnp.arange(ind_dim,n_feat)
+        ind_active_dims = jnp.arange(0, ind_dim)
+        pot_active_dims = jnp.arange(ind_dim, n_feat)
 
         k1 = Linear(active_dims=pot_active_dims)
         k2 = Matern52(active_dims=ind_active_dims)
-        
-        k = Prod(k1,k2)
 
-        model = EnergiesForces(kernel=k,
-                            kernel_params=kernel_params,
-                            sigma_energies=sigma_energies,
-                            sigma_forces=sigma_forces,
-                            mean_function=zero_mean
-                           )
+        k = Prod(k1, k2)
 
-        model.load(os.path.join(AVAIL_MODELS_DIR, "modelenves.npz")) # pure 
+        model = EnergiesForces(
+            kernel=k,
+            kernel_params=kernel_params,
+            sigma_energies=sigma_energies,
+            sigma_forces=sigma_forces,
+            mean_function=zero_mean,
+        )
+
+        model.load(os.path.join(AVAIL_MODELS_DIR, "modelenves.npz"))  # pure
         model.print()
         self._model = model
         return self
 
     def predict(self, x, jacobian_qm, jacobian_mm):
-        energy, forces_qm, forces_mm = predict_env(self._model, x, jacobian_qm, jacobian_mm)
-        energy = energy.squeeze()/H2kcal
-        forces_qm = forces_qm/H2kcal*Bohr2Ang
-        forces_mm = forces_mm/H2kcal*Bohr2Ang
+        energy, forces_qm, forces_mm = predict_env(
+            self._model, x, jacobian_qm, jacobian_mm
+        )
+        energy = energy.squeeze() / H2kcal
+        forces_qm = forces_qm / H2kcal * Bohr2Ang
+        forces_mm = forces_mm / H2kcal * Bohr2Ang
         return energy, forces_qm, forces_mm
 
     def get_input(self, qm_descr, qm_jac, mm_descr, mm_jac_qm, mm_jac_mm):
-        descr = jnp.concatenate((qm_descr, mm_descr),axis=-1)
+        descr = jnp.concatenate((qm_descr, mm_descr), axis=-1)
         jacobian_qm = jnp.concatenate((qm_jac, mm_jac_qm), axis=1)
-        nfeat_qm = qm_jac.shape[1]
-        jv_mm = mm_jac_mm.shape[2]
         jacobian_mm = mm_jac_mm
         return descr, jacobian_qm, jacobian_mm
 
-    def run(self, coords_qm=None, 
-            coords_mm=None, 
-            charges_mm=None, 
-            filebased=True):
+    def run(self, coords_qm=None, coords_mm=None, charges_mm=None, filebased=True):
 
         if filebased:
-        # read input
+            # read input
             _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
-
-        n_qm = coords_qm.shape[0]
 
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
@@ -401,18 +415,20 @@ class ModelEnvES(Model):
 
         # descriptor for the environment
         pot = elec_pot(coords_qm, coords_mm, charges_mm)
-        pot_jac_qm = elec_pot_jac_qm(coords_qm, coords_mm, charges_mm)
-        pot_jac_mm = elec_pot_jac_mm(coords_qm, coords_mm, charges_mm)
+        pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
 
         # concatenate descriptors
-        descr, jacobian_qm, jacobian_mm = self.get_input(ind, ind_jac, pot, pot_jac_qm, pot_jac_mm)
+        descr, jacobian_qm, jacobian_mm = self.get_input(
+            ind, ind_jac, pot, pot_jac_qm, pot_jac_mm
+        )
 
         # predict energy and forces in vacuum
-        energies_vac = self.model_vac.predict_energies(ind)
-        forces_vac = self.model_vac.predict_forces(ind, ind_jac)
+        energies_vac, forces_vac = self.model_vac.predict(ind, ind_jac)
 
         # predict QM/MM interaction energy and forces
-        energies_env, forces_env_qm, forces_env_mm = self.predict(descr,jacobian_qm,jacobian_mm)   
+        energies_env, forces_env_qm, forces_env_mm = self.predict(
+            descr, jacobian_qm, jacobian_mm
+        )
 
         # combine QM vacuum and QM/MM contributions
         energies = energies_vac + energies_env
@@ -420,10 +436,13 @@ class ModelEnvES(Model):
         forces_mm = forces_env_mm
 
         if filebased:
-        # write to file
-            self.write_engrad_pcgrad(e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm)
+            # write to file
+            self.write_engrad_pcgrad(
+                e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm
+            )
         else:
             return energies, forces_qm, forces_mm
+
 
 # ============================================================
 # Dummy models, sometimes useful for testing
@@ -482,8 +501,73 @@ def list_available_models():
 # Useful functions
 # ============================================================
 
+
+def _predict_vac(
+    x1: ArrayLike,
+    x2: ArrayLike,
+    params: Dict[str, Parameter],
+    jaccoef: ArrayLike,
+    jacobian: ArrayLike,
+    mu: ArrayLike,
+) -> Array:
+
+    lengthscale = params["lengthscale"].value
+
+    nf = x1.shape[1]
+    z1 = x1 / lengthscale
+    z2 = x2 / lengthscale
+    diff = jnp.sqrt(5.0) * (z1[:, jnp.newaxis] - z2)
+    d2 = squared_distances(z1, z2)
+    d = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2, 1e-36))
+    expd = jnp.exp(-d)
+
+    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d) * expd
+    d01const = (5.0 / (3.0 * lengthscale**2)) * expd
+
+    diff_ja = jnp.einsum("stf,sf->st", diff, jaccoef)
+    diff_t = jnp.einsum("stf,tfv->stv", diff, jacobian)
+
+    d0kjam = -const * diff_ja
+
+    tmp1 = jnp.einsum("st,st->st", -d01const, diff_ja)
+    d01kjam = jnp.einsum("st,stv->stv", tmp1, diff_t)
+    diagonal = d01const * (1.0 + d)
+    diagonal = diagonal[:, :, jnp.newaxis].repeat(nf, axis=2)
+    tmp2 = jnp.einsum("sf,stf->stf", jaccoef, diagonal)
+    d01kjam += jnp.einsum("stf,tfv->stv", tmp2, jacobian)
+
+    energy = mu + jnp.einsum("st->t", d0kjam)
+
+    forces = jnp.einsum("stv->tv", d01kjam)
+
+    return energy, forces.reshape(-1, 3)
+
+
+@partial(jit, static_argnums=0)
+def predict_vac(model: ModelState, x: ArrayLike, jacobian: ArrayLike):
+
+    kernel_params = model.state.params["kernel_params"]
+    return _predict_vac(
+        x1=model.state.x_train,
+        x2=x,
+        params=kernel_params,
+        jaccoef=model.state.jaccoef,
+        jacobian=jacobian,
+        mu=model.state.mu,
+    )
+
+
 def _predict_env(
-    x1: ArrayLike, x2: ArrayLike, params: Dict[str, Parameter], jaccoef: ArrayLike, jacobian_qm: ArrayLike, jacobian_mm: ArrayLike, c_energies: ArrayLike, mu: ArrayLike, active_dims_m: ArrayLike, active_dims_l: ArrayLike
+    x1: ArrayLike,
+    x2: ArrayLike,
+    params: Dict[str, Parameter],
+    jaccoef: ArrayLike,
+    jacobian_qm: ArrayLike,
+    jacobian_mm: ArrayLike,
+    c_energies: ArrayLike,
+    mu: ArrayLike,
+    active_dims_m: ArrayLike,
+    active_dims_l: ArrayLike,
 ) -> Array:
 
     ns1, nf1 = x1.shape
@@ -508,7 +592,7 @@ def _predict_env(
     z2_m = x2[:, active_dims_m] / lengthscale
     jaccoef_m = jaccoef[:, active_dims_m]
     jacobian_qm_m = jacobian_qm[:, active_dims_m]
-    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m) 
+    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
     d2_m = squared_distances(z1_m, z2_m)
     d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
     expd_m = jnp.exp(-d_m)
@@ -518,57 +602,64 @@ def _predict_env(
 
     mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
 
-    diff_ja = jnp.einsum('stf,sf->st',diff_m,jaccoef_m)
-    diff_t_qm = jnp.einsum('stf,tfv->stv',diff_m,jacobian_qm_m)
+    diff_ja = jnp.einsum("stf,sf->st", diff_m, jaccoef_m)
+    diff_t_qm = jnp.einsum("stf,tfv->stv", diff_m, jacobian_qm_m)
 
     d0kjam = -const * diff_ja
-    d1kjm_qm  = -jnp.einsum('st,stv->stv',-const,diff_t_qm)
+    d1kjm_qm = -jnp.einsum("st,stv->stv", -const, diff_t_qm)
 
-    tmp1 = jnp.einsum('st,st->st', -d01const, diff_ja)
-    d01kjam_qm = jnp.einsum('st,stv->stv', tmp1, diff_t_qm)
+    tmp1 = jnp.einsum("st,st->st", -d01const, diff_ja)
+    d01kjam_qm = jnp.einsum("st,stv->stv", tmp1, diff_t_qm)
     diagonal = d01const * (1.0 + d_m)
-    diagonal = diagonal[:,:, jnp.newaxis].repeat(nact_m, axis=2)
-    tmp2 = jnp.einsum('sf,stf->stf',jaccoef_m,diagonal)
-    d01kjam_qm += jnp.einsum('stf,tfv->stv',tmp2,jacobian_qm_m)
+    diagonal = diagonal[:, :, jnp.newaxis].repeat(nact_m, axis=2)
+    tmp2 = jnp.einsum("sf,stf->stf", jaccoef_m, diagonal)
+    d01kjam_qm += jnp.einsum("stf,tfv->stv", tmp2, jacobian_qm_m)
 
-    energies = mu + jnp.einsum('st,st,s->t',lin,mat52,c_energies)
-    energies += jnp.einsum('st,st->t',lin,d0kjam)
-    energies += jnp.einsum('st,st->t',d0kjal,mat52)
+    energies = mu + jnp.einsum("st,st,s->t", lin, mat52, c_energies)
+    energies += jnp.einsum("st,st->t", lin, d0kjam)
+    energies += jnp.einsum("st,st->t", d0kjal, mat52)
 
-    forces_qm = jnp.einsum('st,stv,s->tv',lin,d1kjm_qm,c_energies)
-    forces_qm += jnp.einsum('stv,st,s->tv',d1kjl_qm,mat52,c_energies)
-    forces_qm += jnp.einsum('stv,st->tv',d01kjal_qm,mat52)
-    forces_qm += jnp.einsum('st,stv->tv',d0kjal,d1kjm_qm)
-    forces_qm += jnp.einsum('st,stv->tv',d0kjam,d1kjl_qm)
-    forces_qm += jnp.einsum('stv,st->tv',d01kjam_qm,lin)
+    forces_qm = jnp.einsum("st,stv,s->tv", lin, d1kjm_qm, c_energies)
+    forces_qm += jnp.einsum("stv,st,s->tv", d1kjl_qm, mat52, c_energies)
+    forces_qm += jnp.einsum("stv,st->tv", d01kjal_qm, mat52)
+    forces_qm += jnp.einsum("st,stv->tv", d0kjal, d1kjm_qm)
+    forces_qm += jnp.einsum("st,stv->tv", d0kjam, d1kjl_qm)
+    forces_qm += jnp.einsum("stv,st->tv", d01kjam_qm, lin)
 
-    forces = jnp.einsum('sf,st,s->tf',d1kl,mat52,c_energies)
-    forces += jnp.einsum('sf,st->tf',d0j1kal,mat52)
-    forces += jnp.einsum('st,sf->tf',d0kjam,d1kl)
+    forces = jnp.einsum("sf,st,s->tf", d1kl, mat52, c_energies)
+    forces += jnp.einsum("sf,st->tf", d0j1kal, mat52)
+    forces += jnp.einsum("st,sf->tf", d0kjam, d1kl)
 
-    forces_mm = jnp.einsum('tf,tfv->tv',forces,jacobian_mm)
+    forces_mm = jnp.einsum("tf,tfv->tv", forces, jacobian_mm)
 
-    return energies, forces_qm.reshape(-1,3), forces_mm.reshape(-1,3)
+    return energies, forces_qm.reshape(-1, 3), forces_mm.reshape(-1, 3)
 
-@partial(jit,static_argnums=0)
+
+@partial(jit, static_argnums=0)
 def predict_env(
-        model: ModelState, x: ArrayLike, jacobian_qm: ArrayLike, jacobian_mm: ArrayLike,
+    model: ModelState,
+    x: ArrayLike,
+    jacobian_qm: ArrayLike,
+    jacobian_mm: ArrayLike,
 ):
     ind_dim = 378
     n_feat = 378 + 28
-    ind_active_dims = jnp.arange(0,ind_dim)
-    pot_active_dims = jnp.arange(ind_dim,n_feat)
+    ind_active_dims = jnp.arange(0, ind_dim)
+    pot_active_dims = jnp.arange(ind_dim, n_feat)
     kernel_params = model.state.params["kernel_params"]
-    return _predict_env(x1=model.state.x_train,
-            x2=x,
-            params=kernel_params, 
-            jaccoef=model.state.jaccoef, 
-            jacobian_qm=jacobian_qm, 
-            jacobian_mm=jacobian_mm, 
-            c_energies=model.state.c_energies, 
-            mu=model.state.mu, 
-            active_dims_m=ind_active_dims, 
-            active_dims_l=pot_active_dims)
+    return _predict_env(
+        x1=model.state.x_train,
+        x2=x,
+        params=kernel_params,
+        jaccoef=model.state.jaccoef,
+        jacobian_qm=jacobian_qm,
+        jacobian_mm=jacobian_mm,
+        c_energies=model.state.c_energies,
+        mu=model.state.mu,
+        active_dims_m=ind_active_dims,
+        active_dims_l=pot_active_dims,
+    )
+
 
 # ============================================================
 # Descriptors
@@ -729,131 +820,49 @@ def elec_pot(
 
 
 @jit
-#def elec_pot_jac_qm(
-#    coords_qm: ArrayLike,
-#    coords_mm: ArrayLike,
-#    charges_mm: ArrayLike,
-#) -> Array:
-#    """Jacobian of electrostatic potential QM coordinates
-#
-#    Args:
-#        coords_qm: shape (n_atoms_qm, 3)
-#        coords_mm: shape (n_atoms_mm, 3)
-#        charges_mm: shape (n_atoms_mm,)
-#    Returns:
-#        jacobian: shape (1, n_atoms_qm, n_atoms_qm*3)
-#    """
-#    n_qm, _ = coords_qm.shape
-#    jac = jax.jacrev(elec_pot, argnums=0)(coords_qm, coords_mm, charges_mm)
-#
-#    return jnp.expand_dims(jac.reshape(n_qm, n_qm * 3), axis=0)
-
-@jit
-def elec_pot_jac_qm(
-    coords_qm: ArrayLike,
-    coords_mm: ArrayLike,
-    charges_mm: ArrayLike,
-) -> Array:
-
-    n_qm, _ = coords_qm.shape
-    jac_pot = jnp.zeros((n_qm, n_qm, 3))
-
-    def row_scan(i, jac_pot):
-        
-        diff = coords_qm[i] - coords_mm
-        d = jnp.sqrt(jnp.sum((coords_qm[i] - coords_mm) ** 2,axis=1))
-        
-        deriv = -jnp.sum((charges_mm[:,jnp.newaxis]*diff/d[:,jnp.newaxis]**3),axis=0)
-        
-        def select(atom, jac_pot):
-            return jac_pot.at[i,atom].set(
-                jnp.where(
-                    atom == i,
-                    deriv,
-                    0.0
-                )
-            )
-
-        return jax.lax.fori_loop(0, n_qm, select, jac_pot)
-
-    jac_pot = jax.lax.fori_loop(0, n_qm, row_scan, jac_pot)
-
-    return jnp.expand_dims(jac_pot.reshape(n_qm, n_qm * 3), axis=0)
-
-@jit
 def elec_pot_jac(
     coords_qm: ArrayLike,
     coords_mm: ArrayLike,
     charges_mm: ArrayLike,
 ) -> Array:
-
-    n_qm, _ = coords_qm.shape
-    n_mm, _ = coords_mm.shape
-    jac_pot_qm = jnp.zeros((n_qm, n_qm, 3))
-
-    diff = coords_qm[:,jnp.newaxis,:] - coords_mm
-
-    d = jnp.sqrt(jnp.sum((coords_qm[:,jnp.newaxis,:] - coords_mm) ** 2,axis=-1))
-
-    jac_pot_mm = charges_mm[jnp.newaxis,:,jnp.newaxis]*diff/d[:,:,jnp.newaxis]**3
-
-    def row_scan(i, jac_pot_qm):
-        
-        deriv = -jnp.sum((charges_mm[:,jnp.newaxis]*diff[i]/d[i,:,jnp.newaxis]**3),axis=0)
-        
-        def select(atom, jac_pot_qm):
-            return jac_pot_qm.at[i,atom].set(
-                jnp.where(
-                    atom == i,
-                    deriv,
-                    0.0
-                )
-            )
-
-        return jax.lax.fori_loop(0, n_qm, select, jac_pot_qm)
-
-    jac_pot_qm = jax.lax.fori_loop(0, n_qm, row_scan, jac_pot_qm)
-
-    return jnp.expand_dims(jac_pot_qm.reshape(n_qm, n_qm * 3), axis=0), jnp.expand_dims(jac_pot_mm.reshape(n_qm, n_mm * 3), axis=0)
-
-@jit
-def elec_pot_jac_mm(
-    coords_qm: ArrayLike,
-    coords_mm: ArrayLike,
-    charges_mm: ArrayLike,
-) -> Array:
-
-    n_qm, _ = coords_qm.shape
-    n_mm, _ = coords_mm.shape
-
-    diff = coords_qm[:,jnp.newaxis,:] - coords_mm
-
-    d = jnp.sqrt(jnp.sum((coords_qm[:,jnp.newaxis,:] - coords_mm) ** 2,axis=-1))
-        
-    jac_pot = charges_mm[jnp.newaxis,:,jnp.newaxis]*diff/d[:,:,jnp.newaxis]**3
-        
-    return jnp.expand_dims(jac_pot.reshape(n_qm, n_mm * 3), axis=0)
-
-@jit
-def elec_pot_jac_mm_old(
-    coords_qm: ArrayLike,
-    coords_mm: ArrayLike,
-    charges_mm: ArrayLike,
-) -> Array:
-    """Electrostatic potential generated from MM atoms on QM atoms
+    """Jacobian of electrostatic potential QM coordinates
 
     Args:
         coords_qm: shape (n_atoms_qm, 3)
         coords_mm: shape (n_atoms_mm, 3)
         charges_mm: shape (n_atoms_mm,)
     Returns:
-        jacobian: shape (1, n_atoms_qm, n_atoms_mm*3)
+        jacobian qm: shape (1, n_atoms_qm, n_atoms_qm*3)
+        jacobian mm: shape (1, n_atoms_qm, n_atoms_mm*3)
     """
-    n_atoms_qm, _ = coords_qm.shape
+    n_qm, _ = coords_qm.shape
     n_mm, _ = coords_mm.shape
-    jac = jax.jacrev(elec_pot, argnums=1)(coords_qm, coords_mm, charges_mm)
+    jac_pot_qm = jnp.zeros((n_qm, n_qm, 3))
 
-    return jnp.expand_dims(jac.reshape(n_atoms_qm, n_mm * 3), axis=0)
+    diff = coords_qm[:, jnp.newaxis, :] - coords_mm
+
+    d = jnp.sqrt(jnp.sum((coords_qm[:, jnp.newaxis, :] - coords_mm) ** 2, axis=-1))
+
+    jac_pot_mm = (
+        charges_mm[jnp.newaxis, :, jnp.newaxis] * diff / d[:, :, jnp.newaxis] ** 3
+    )
+
+    def row_scan(i, jac_pot_qm):
+
+        deriv = -jnp.sum(
+            (charges_mm[:, jnp.newaxis] * diff[i] / d[i, :, jnp.newaxis] ** 3), axis=0
+        )
+
+        def select(atom, jac_pot_qm):
+            return jac_pot_qm.at[i, atom].set(jnp.where(atom == i, deriv, 0.0))
+
+        return jax.lax.fori_loop(0, n_qm, select, jac_pot_qm)
+
+    jac_pot_qm = jax.lax.fori_loop(0, n_qm, row_scan, jac_pot_qm)
+
+    return jnp.expand_dims(jac_pot_qm.reshape(n_qm, n_qm * 3), axis=0), jnp.expand_dims(
+        jac_pot_mm.reshape(n_qm, n_mm * 3), axis=0
+    )
 
 
 def compute_potential(charges_mm: ArrayLike, dd: ArrayLike) -> Array:

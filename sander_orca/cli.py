@@ -1,6 +1,6 @@
-import sys
 import os
 import socket
+import sys
 
 HOST = "127.0.0.1"  # Standard loopback interface address (localhost)
 DEFAULT_PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
@@ -9,6 +9,7 @@ DEFAULT_PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
 # ============================================================
 # Helpers
 # ============================================================
+
 
 def get_port():
     port = os.getenv("SANDER_ORCA_PORT")
@@ -27,6 +28,7 @@ def get_port():
 def server_cli_parse():
     "command-line interface parser for the server"
     import argparse
+
     from .models import list_available_models
 
     def exitparse(func):
@@ -67,7 +69,7 @@ def server_cli_parse():
 
     optional.add_argument(
         "--filebased",
-        action='store_true',
+        action="store_true",
         required=None,
         help="Use file based interface",
     )
@@ -108,10 +110,13 @@ def server_cli_parse():
 
 
 def server():
-    from .models import available_models
-    import numpy as np
-    import jax.numpy as jnp
     import struct
+
+    import jax.numpy as jnp
+    import numpy as np
+
+    from .models import available_models
+
     dtype = np.float64
 
     args, parser = server_cli_parse()
@@ -168,39 +173,41 @@ def server():
                     # check whether a model-run is requested
                     cmd = inp.decode().strip()
                     if cmd == "model-run":
-                        logprint(
-                            "Requested calculation by sander.\n"
-                        )
+                        logprint("Requested calculation by sander.\n")
 
                         if args.filebased:
-                        # read input, predict, and write to file
+                            # read input, predict, and write to file
                             model.run()
                         else:
-                        # receive data via socket
-                            system_data = jnp.zeros((2,1),dtype)
-                            system_data = recvall(conn,system_data)
+                            # receive data via socket
+                            system_data = jnp.zeros((2, 1), dtype)
+                            system_data = recvall(conn, system_data)
                             nqm, nmm = int(system_data[0]), int(system_data[1])
-                            sh_qm = (nqm,3)
-                            coords_qm = jnp.zeros(sh_qm,dtype)
-                            coords_qm = recvall(conn,coords_qm)
+                            sh_qm = (nqm, 3)
+                            coords_qm = jnp.zeros(sh_qm, dtype)
+                            coords_qm = recvall(conn, coords_qm)
                             if args.model_env is not None:
-                                sh_mm = (nmm,4)
-                                mmcoordchg = jnp.zeros(sh_mm,dtype)
-                                mmcoordchg = recvall(conn,mmcoordchg)
-                                coords_mm = mmcoordchg[:,:3] 
-                                charges_mm = mmcoordchg[:,3] 
-                        # run the prediction
-                                energy, grad_qm, grad_mm = model.run(coords_qm,
-                                                                     coords_mm,
-                                                                     charges_mm,
-                                                                     filebased=args.filebased)
-#                                conn.sendall(grad_qm)
+                                sh_mm = (nmm, 4)
+                                mmcoordchg = jnp.zeros(sh_mm, dtype)
+                                mmcoordchg = recvall(conn, mmcoordchg)
+                                coords_mm = mmcoordchg[:, :3]
+                                charges_mm = mmcoordchg[:, 3]
+                                # run the prediction
+                                energy, grad_qm, grad_mm = model.run(
+                                    coords_qm,
+                                    coords_mm,
+                                    charges_mm,
+                                    filebased=args.filebased,
+                                )
+                                #                                conn.sendall(grad_qm)
                                 conn.sendall(grad_mm)
                             else:
-                                energy, grad_qm = model.run(coords_qm,filebased=args.filebased)
+                                energy, grad_qm = model.run(
+                                    coords_qm, filebased=args.filebased
+                                )
 
                             conn.sendall(grad_qm)
-                            conn.sendall(struct.pack('<d',energy))
+                            conn.sendall(struct.pack("<d", energy))
 
                         # tell the client that we have finished
                         conn.sendall(b"model-fin   ")
@@ -209,9 +216,11 @@ def server():
                         logprint("Received request of server stop.\nStopping now...")
                         sys.exit(0)
 
+
 # ============================================================
 # Auxiliary functions
 # ============================================================
+
 
 def recvall(sock, dest):
     """Gets the data in dest. Dest is the empty data array
@@ -224,9 +233,10 @@ def recvall(sock, dest):
        The data read from the socket to be read into dest.
     """
     import numpy as np
-    buf = np.zeros(0,np.byte)
+
+    buf = np.zeros(0, np.byte)
     blen = dest.itemsize * dest.size
-    if (blen > len(buf)):
+    if blen > len(buf):
         buf.resize(blen)
     bpos = 0
 
@@ -234,15 +244,16 @@ def recvall(sock, dest):
         timeout = False
         # post-2.5 version: slightly more compact for modern python versions
         try:
-          bpart = 1
-          bpart = sock.recv_into(buf[bpos:], blen-bpos)
+            bpart = 1
+            bpart = sock.recv_into(buf[bpos:], blen - bpos)
         except socket.timeout:
-          print(" @SOCKET:   Timeout in status recvall, trying again!")
-          timeout = True
-          pass
+            print(" @SOCKET:   Timeout in status recvall, trying again!")
+            timeout = True
+            pass
         bpos += bpart
 
     return np.frombuffer(buf[0:blen], dest.dtype).reshape(dest.shape)
+
 
 # ============================================================
 # Clients
