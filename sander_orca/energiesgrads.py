@@ -11,19 +11,19 @@ ParameterDict = Dict[str, Parameter]
 Kernel = Any
 
 
-class EnergiesForces:
+class EnergiesGrads:
     def __init__(
         self,
         kernel: Callable,
         mean_function: Callable,
         kernel_params: Dict[str, Parameter] = None,
         sigma_energies: Parameter = None,
-        sigma_forces: Parameter = None,
+        sigma_grads: Parameter = None,
     ):
         params = {
             "kernel_params": kernel_params,
             "sigma_energies": sigma_energies,
-            "sigma_forces": sigma_forces,
+            "sigma_grads": sigma_grads,
         }
         opt = {
             "x_train": None,
