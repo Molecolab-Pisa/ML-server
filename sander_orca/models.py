@@ -15,74 +15,15 @@ from jax import Array, jit
 from jax.typing import ArrayLike
 
 from .energiesforces import EnergiesForces
-from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
+
+from .basemodels import BaseModelVac, BaseModelEnv
 
 # Folder to the parameters of the available models
 AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models")
 H2kcal = 627.5094740631
 Bohr2Ang = 0.529177210903
 
-
-class Model:
-    """base model class
-
-    Every model should inherit from this class, as here
-    we implement the basic functions needed for the interface.
-    """
-
-    def __init__(self, workdir: str) -> None:
-        """
-        Args:
-            workdir: path to the working directory
-        """
-        self.workdir = workdir
-        # set the paths now
-        self.inpfile = os.path.join(workdir, "inpfile.xyz")
-        self.ptchrg = os.path.join(workdir, "ptchrg.xyz")
-        self.engrad = os.path.join(workdir, "orc_job.engrad")
-        self.pcgrad = os.path.join(workdir, "orc_job.pcgrad")
-
-    def read_sander_xyz(self):
-        "reads the inpfile.xyz and ptchrg.xyz"
-        # try reading the two files, if the file is not there
-        # (e.g., maybe there are no atoms in the mm part)
-        # handle that case and return None
-        try:
-            num_qm, coords_qm, elems_qm = read_inpfile(self.inpfile)
-        except FileNotFoundError:
-            num_qm, coords_qm, elems_qm = None, None, None
-
-        try:
-            num_mm, coords_mm, charges_mm = read_ptchrg(self.ptchrg)
-        except FileNotFoundError:
-            num_mm, coords_mm, charges_mm = None, None, None
-
-        return num_qm, coords_qm, elems_qm, num_mm, coords_mm, charges_mm
-
-    def write_engrad_pcgrad(self, e_tot=None, grads_qm=None, grads_mm=None):
-        "writes the engrad and pcgrad files"
-        if e_tot is not None and grads_qm is not None:
-            write_engrad(self.engrad, e_tot=e_tot, grads_qm=grads_qm)
-
-        if grads_mm is not None:
-            write_pcgrad(self.pcgrad, grads_mm=grads_mm)
-
-    def load(self):
-        raise NotImplementedError
-
-    def predict_energies(self, x):
-        return self._model.predict_y_derivs(x)
-
-    def predict_forces(self, x, jacobian):
-        return self._model.predict_derivs(x, jacobian)
-
-
-# ============================================================
-# Available models
-# ============================================================
-
-
-class ModelVacGS(Model):
+class ModelVacGS(BaseModelVac):
     def __init__(self, workdir):
         super().__init__(workdir)
 
@@ -111,113 +52,84 @@ class ModelVacGS(Model):
         self.constant = model.state.constant
         return self
 
-    def predict(self, ind, ind_jac):
-        energy, forces = predict_vac(self._model, ind, ind_jac)
+    def predict(self, coords_qm, ind=None, ind_jac=None, **kwargs):
+        if ind is None:
+            ind = inv_dist(coords_qm)
+        if ind_jac is None:
+            ind_jac = inv_dist_jac(coords_qm)
+        energy, grads = predict_vac(self._model, ind, ind_jac)
         energy = energy.squeeze() / Bohr2Ang + self.constant
-        return energy, forces
-
-    #    def predict_energies(self, x):
-    #        pred = super().predict_energies(x) / Bohr2Ang + self.constant
-    #        return pred.squeeze()
-    #
-    #    def predict_forces(self, x, jacobian):
-    #        pred = super().predict_forces(x, jacobian)
-    #        forces_vac = pred.reshape(1, -1, 3)
-    #        return forces_vac.squeeze()
-
-    def run(self, coords_qm=None, filebased=True):
-        if filebased:
-            # read input
-            _, coords_qm, _, _, _, _ = self.read_sander_xyz()
-
-        # descriptor
-        ind = inv_dist(coords_qm)
-        ind_jac = inv_dist_jac(coords_qm)
-
-        # predict energy and forces
-        energies_vac, forces_vac = self.predict(ind, ind_jac)
-
-        if filebased:
-            # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None
-            )
-        else:
-            return energies_vac, forces_vac
+        return energy, grads
 
 
-class ModelVacES(Model):
-    def __init__(self, workdir):
-        super().__init__(workdir)
+#class ModelVacES(Model):
+#    def __init__(self, workdir):
+#        super().__init__(workdir)
+#
+#    def load(self):
+#        l = 1.0
+#        s = 0.1
+#
+#        lengthscale = Parameter(
+#            l, trainable=False, bijector=Softplus(), prior=NormalPrior()
+#        )
+#
+#        sigma = Parameter(s, trainable=False, bijector=Softplus(), prior=NormalPrior())
+#
+#        kernel_params = dict(lengthscale=lengthscale)
+#
+#        model = GPR(
+#            kernel=Matern52(),
+#            kernel_params=kernel_params,
+#            mean_function=zero_mean,
+#            sigma=sigma,
+#        )
+#
+#        model.load(os.path.join(AVAIL_MODELS_DIR, "modelvaces.npz"))  # pure model
+#        model.print()
+#        self._model = model
+#        self.constant = model.state.constant
+#        return self
+#
+#    #    def predict_energies(self, x):
+#    #        pred = super().predict_energies(x) / Bohr2Ang + self.constant
+#    #        return pred.squeeze()
+#    #
+#    #    def predict_forces(self, x, jacobian):
+#    #        pred = super().predict_forces(x, jacobian)
+#    #        forces_vac = pred.reshape(1, -1, 3)
+#    #        return forces_vac.squeeze()
+#
+#    def predict(self, ind, ind_jac):
+#        energy, forces = predict_vac(self._model, ind, ind_jac)
+#        energy = energy.squeeze() / Bohr2Ang + self.constant
+#        return energy, forces
+#
+#    def run(self, coords_qm=None, filebased=True):
+#
+#        if filebased:
+#            # read input
+#            _, coords_qm, _, _, _, _ = self.read_sander_xyz()
+#
+#        # descriptor
+#        ind = inv_dist(coords_qm)
+#        ind_jac = inv_dist_jac(coords_qm)
+#
+#        # predict energy and forces
+#        energies_vac, forces_vac = self.predict(ind, ind_jac)
+#
+#        if filebased:
+#            # write to file
+#            self.write_engrad_pcgrad(
+#                e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None
+#            )
+#        else:
+#            return energies_vac, forces_vac
 
-    def load(self):
-        l = 1.0
-        s = 0.1
 
-        lengthscale = Parameter(
-            l, trainable=False, bijector=Softplus(), prior=NormalPrior()
-        )
-
-        sigma = Parameter(s, trainable=False, bijector=Softplus(), prior=NormalPrior())
-
-        kernel_params = dict(lengthscale=lengthscale)
-
-        model = GPR(
-            kernel=Matern52(),
-            kernel_params=kernel_params,
-            mean_function=zero_mean,
-            sigma=sigma,
-        )
-
-        model.load(os.path.join(AVAIL_MODELS_DIR, "modelvaces.npz"))  # pure model
-        model.print()
-        self._model = model
-        self.constant = model.state.constant
-        return self
-
-    #    def predict_energies(self, x):
-    #        pred = super().predict_energies(x) / Bohr2Ang + self.constant
-    #        return pred.squeeze()
-    #
-    #    def predict_forces(self, x, jacobian):
-    #        pred = super().predict_forces(x, jacobian)
-    #        forces_vac = pred.reshape(1, -1, 3)
-    #        return forces_vac.squeeze()
-
-    def predict(self, ind, ind_jac):
-        energy, forces = predict_vac(self._model, ind, ind_jac)
-        energy = energy.squeeze() / Bohr2Ang + self.constant
-        return energy, forces
-
-    def run(self, coords_qm=None, filebased=True):
-
-        if filebased:
-            # read input
-            _, coords_qm, _, _, _, _ = self.read_sander_xyz()
-
-        # descriptor
-        ind = inv_dist(coords_qm)
-        ind_jac = inv_dist_jac(coords_qm)
-
-        # predict energy and forces
-        energies_vac, forces_vac = self.predict(ind, ind_jac)
-
-        if filebased:
-            # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energies_vac, grads_qm=forces_vac, grads_mm=None
-            )
-        else:
-            return energies_vac, forces_vac
-
-
-class ModelEnvGS(Model):
-    def __init__(self, workdir, model_vac=None):
-        super().__init__(workdir)
-        if model_vac is None:
-            raise ValueError("You need to specify the vacuum model.")
-        else:
-            self.model_vac = model_vac
+class ModelEnvGS(BaseModelEnv):
+    def __init__(self, workdir, model_vac):
+        super().__init__(workdir, model_vac=model_vac)
 
     def load(self):
         s_energies = 1e-3
@@ -228,14 +140,14 @@ class ModelEnvGS(Model):
             s_energies,
             trainable=True,
             bijector=Softplus(),
-            prior=NormalPrior(loc=s_energies, scale=0.01),
+            prior=NormalPrior(),
         )
 
         sigma_forces = Parameter(
             s_forces,
             trainable=True,
             bijector=Softplus(),
-            prior=NormalPrior(loc=s_forces, scale=0.01),
+            prior=NormalPrior(),
         )
 
         k2_lengthscale = dict(
@@ -243,7 +155,7 @@ class ModelEnvGS(Model):
                 k2_l,
                 trainable=True,
                 bijector=Softplus(),
-                prior=NormalPrior(loc=k2_l, scale=10.0),
+                prior=NormalPrior(),
             )
         )
 
@@ -272,25 +184,12 @@ class ModelEnvGS(Model):
         self._model = model
         return self
 
-    def predict(self, x, jacobian_qm, jacobian_mm):
-        energy, forces_qm, forces_mm = predict_env(
-            self._model, x, jacobian_qm, jacobian_mm
-        )
-        energy = energy.squeeze() / H2kcal
-        forces_qm = forces_qm / H2kcal * Bohr2Ang
-        forces_mm = forces_mm / H2kcal * Bohr2Ang
-        return energy, forces_qm, forces_mm
+    def get_input(self, ind_descr, ind_jac, pot_descr, pot_jac_qm):
+        descr = jnp.concatenate((ind_descr, pot_descr), axis=-1)
+        jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
+        return descr, jacobian_qm
 
-    def get_input(self, qm_descr, qm_jac, mm_descr, mm_jac_qm, mm_jac_mm):
-        descr = jnp.concatenate((qm_descr, mm_descr), axis=-1)
-        jacobian_qm = jnp.concatenate((qm_jac, mm_jac_qm), axis=1)
-        jacobian_mm = mm_jac_mm
-        return descr, jacobian_qm, jacobian_mm
-
-    def run(self, coords_qm=None, coords_mm=None, charges_mm=None, filebased=True):
-        if filebased:
-            # read input
-            _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
+    def predict(self, coords_qm, coords_mm, charges_mm, **kwargs):
 
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
@@ -301,178 +200,144 @@ class ModelEnvGS(Model):
         pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
 
         # concatenate descriptors
-        descr, jacobian_qm, jacobian_mm = self.get_input(
-            ind, ind_jac, pot, pot_jac_qm, pot_jac_mm
+        descr, jacobian_qm = self.get_input(
+            ind, ind_jac, pot, pot_jac_qm
         )
 
         # predict energy and forces in vacuum
-        energies_vac, forces_vac = self.model_vac.predict(ind, ind_jac)
+        energy_vac, forces_vac = self.model_vac.predict(coords_qm, ind=ind, ind_jac=ind_jac)
 
         # predict QM/MM interaction energy and forces
-        energies_env, forces_env_qm, forces_env_mm = self.predict(
-            descr, jacobian_qm, jacobian_mm
+        energy_env, forces_env_qm, forces_env_mm = predict_env(
+            self._model, descr, jacobian_qm, pot_jac_mm
         )
+        energy_env = energy_env.squeeze() / H2kcal
+        forces_env_qm = forces_env_qm / H2kcal * Bohr2Ang
+        forces_env_mm = forces_env_mm / H2kcal * Bohr2Ang
 
         # combine QM vacuum and QM/MM contributions
-        energies = energies_vac + energies_env
+        energy = energy_vac + energy_env
         forces_qm = forces_vac + forces_env_qm
         forces_mm = forces_env_mm
 
-        if filebased:
-            # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm
-            )
-        else:
-            return energies, forces_qm, forces_mm
-
-
-class ModelEnvES(Model):
-    def __init__(self, workdir, model_vac=None):
-        super().__init__(workdir)
-        if model_vac is None:
-            raise ValueError("You need to specify the vacuum model.")
-        else:
-            self.model_vac = model_vac
-
-    def load(self):
-        s_energies = 1e-3
-        s_forces = 1e-3
-        k2_l = 5.0
-
-        sigma_energies = Parameter(
-            s_energies,
-            trainable=True,
-            bijector=Softplus(),
-            prior=NormalPrior(loc=s_energies, scale=0.01),
-        )
-
-        sigma_forces = Parameter(
-            s_forces,
-            trainable=True,
-            bijector=Softplus(),
-            prior=NormalPrior(loc=s_forces, scale=0.01),
-        )
-
-        k2_lengthscale = dict(
-            lengthscale=Parameter(
-                k2_l,
-                trainable=True,
-                bijector=Softplus(),
-                prior=NormalPrior(loc=k2_l, scale=10.0),
-            )
-        )
-
-        kernel_params = {"kernel1": {}, "kernel2": k2_lengthscale}
-
-        ind_dim = 378
-        n_feat = 378 + 28
-        ind_active_dims = jnp.arange(0, ind_dim)
-        pot_active_dims = jnp.arange(ind_dim, n_feat)
-
-        k1 = Linear(active_dims=pot_active_dims)
-        k2 = Matern52(active_dims=ind_active_dims)
-
-        k = Prod(k1, k2)
-
-        model = EnergiesForces(
-            kernel=k,
-            kernel_params=kernel_params,
-            sigma_energies=sigma_energies,
-            sigma_forces=sigma_forces,
-            mean_function=zero_mean,
-        )
-
-        model.load(os.path.join(AVAIL_MODELS_DIR, "modelenves.npz"))  # pure
-        model.print()
-        self._model = model
-        return self
-
-    def predict(self, x, jacobian_qm, jacobian_mm):
-        energy, forces_qm, forces_mm = predict_env(
-            self._model, x, jacobian_qm, jacobian_mm
-        )
-        energy = energy.squeeze() / H2kcal
-        forces_qm = forces_qm / H2kcal * Bohr2Ang
-        forces_mm = forces_mm / H2kcal * Bohr2Ang
         return energy, forces_qm, forces_mm
 
-    def get_input(self, qm_descr, qm_jac, mm_descr, mm_jac_qm, mm_jac_mm):
-        descr = jnp.concatenate((qm_descr, mm_descr), axis=-1)
-        jacobian_qm = jnp.concatenate((qm_jac, mm_jac_qm), axis=1)
-        jacobian_mm = mm_jac_mm
-        return descr, jacobian_qm, jacobian_mm
-
-    def run(self, coords_qm=None, coords_mm=None, charges_mm=None, filebased=True):
-
-        if filebased:
-            # read input
-            _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
-
-        # descriptor for the QM part
-        ind = inv_dist(coords_qm)
-        ind_jac = inv_dist_jac(coords_qm)
-
-        # descriptor for the environment
-        pot = elec_pot(coords_qm, coords_mm, charges_mm)
-        pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
-
-        # concatenate descriptors
-        descr, jacobian_qm, jacobian_mm = self.get_input(
-            ind, ind_jac, pot, pot_jac_qm, pot_jac_mm
-        )
-
-        # predict energy and forces in vacuum
-        energies_vac, forces_vac = self.model_vac.predict(ind, ind_jac)
-
-        # predict QM/MM interaction energy and forces
-        energies_env, forces_env_qm, forces_env_mm = self.predict(
-            descr, jacobian_qm, jacobian_mm
-        )
-
-        # combine QM vacuum and QM/MM contributions
-        energies = energies_vac + energies_env
-        forces_qm = forces_vac + forces_env_qm
-        forces_mm = forces_env_mm
-
-        if filebased:
-            # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm
-            )
-        else:
-            return energies, forces_qm, forces_mm
 
 
-# ============================================================
-# Dummy models, sometimes useful for testing
-# ============================================================
-
-
-class DummyModelZeroGrads(Model):
-    "Model that always outputs zero gradients for the qm and mm part"
-
-    def load(self):
-        return self
-
-    def run(self):
-        # read input
-        (
-            num_qm,
-            coords_qm,
-            elems_qm,
-            num_mm,
-            coords_mm,
-            charges_mm,
-        ) = self.read_sander_xyz()
-
-        # compute energy and gradients
-        e_tot = 0.0
-        grads_qm = np.zeros((num_qm, 3)) if num_qm is not None else None
-        grads_mm = np.zeros((num_mm, 3)) if num_mm is not None else None
-
-        # write to file
-        self.write_engrad_pcgrad(e_tot=e_tot, grads_qm=grads_qm, grads_mm=grads_mm)
+#class ModelEnvES(Model):
+#    def __init__(self, workdir, model_vac=None):
+#        super().__init__(workdir)
+#        if model_vac is None:
+#            raise ValueError("You need to specify the vacuum model.")
+#        else:
+#            self.model_vac = model_vac
+#
+#    def load(self):
+#        s_energies = 1e-3
+#        s_forces = 1e-3
+#        k2_l = 5.0
+#
+#        sigma_energies = Parameter(
+#            s_energies,
+#            trainable=True,
+#            bijector=Softplus(),
+#            prior=NormalPrior(loc=s_energies, scale=0.01),
+#        )
+#
+#        sigma_forces = Parameter(
+#            s_forces,
+#            trainable=True,
+#            bijector=Softplus(),
+#            prior=NormalPrior(loc=s_forces, scale=0.01),
+#        )
+#
+#        k2_lengthscale = dict(
+#            lengthscale=Parameter(
+#                k2_l,
+#                trainable=True,
+#                bijector=Softplus(),
+#                prior=NormalPrior(loc=k2_l, scale=10.0),
+#            )
+#        )
+#
+#        kernel_params = {"kernel1": {}, "kernel2": k2_lengthscale}
+#
+#        ind_dim = 378
+#        n_feat = 378 + 28
+#        ind_active_dims = jnp.arange(0, ind_dim)
+#        pot_active_dims = jnp.arange(ind_dim, n_feat)
+#
+#        k1 = Linear(active_dims=pot_active_dims)
+#        k2 = Matern52(active_dims=ind_active_dims)
+#
+#        k = Prod(k1, k2)
+#
+#        model = EnergiesForces(
+#            kernel=k,
+#            kernel_params=kernel_params,
+#            sigma_energies=sigma_energies,
+#            sigma_forces=sigma_forces,
+#            mean_function=zero_mean,
+#        )
+#
+#        model.load(os.path.join(AVAIL_MODELS_DIR, "modelenves.npz"))  # pure
+#        model.print()
+#        self._model = model
+#        return self
+#
+#    def predict(self, x, jacobian_qm, jacobian_mm):
+#        energy, forces_qm, forces_mm = predict_env(
+#            self._model, x, jacobian_qm, jacobian_mm
+#        )
+#        energy = energy.squeeze() / H2kcal
+#        forces_qm = forces_qm / H2kcal * Bohr2Ang
+#        forces_mm = forces_mm / H2kcal * Bohr2Ang
+#        return energy, forces_qm, forces_mm
+#
+#    def get_input(self, ind_descr, ind_jac, pot_descr, pot_jac_qm):
+#        descr = jnp.concatenate((ind_descr, pot_descr), axis=-1)
+#        jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
+#        return descr, jacobian_qm
+#
+#    def run(self, coords_qm=None, coords_mm=None, charges_mm=None, filebased=True):
+#
+#        if filebased:
+#            # read input
+#            _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
+#
+#        # descriptor for the QM part
+#        ind = inv_dist(coords_qm)
+#        ind_jac = inv_dist_jac(coords_qm)
+#
+#        # descriptor for the environment
+#        pot = elec_pot(coords_qm, coords_mm, charges_mm)
+#        pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
+#
+#        # concatenate descriptors
+#        descr, jacobian_qm = self.get_input(
+#            ind, ind_jac, pot, pot_jac_qm
+#        )
+#
+#        # predict energy and forces in vacuum
+#        energies_vac, forces_vac = self.model_vac.predict(ind, ind_jac)
+#
+#        # predict QM/MM interaction energy and forces
+#        energies_env, forces_env_qm, forces_env_mm = self.predict(
+#            descr, jacobian_qm, pot_jac_mm
+#        )
+#
+#        # combine QM vacuum and QM/MM contributions
+#        energies = energies_vac + energies_env
+#        forces_qm = forces_vac + forces_env_qm
+#        forces_mm = forces_env_mm
+#
+#        if filebased:
+#            # write to file
+#            self.write_engrad_pcgrad(
+#                e_tot=energies, grads_qm=forces_qm, grads_mm=forces_mm
+#            )
+#        else:
+#            return energies, forces_qm, forces_mm
 
 
 # ============================================================
@@ -482,12 +347,10 @@ class DummyModelZeroGrads(Model):
 available_models = {
     # models: vacuum
     "model_vac_gs": ModelVacGS,
-    "model_vac_es": ModelVacES,
+#    "model_vac_es": ModelVacES,
     # models: environment
     "model_env_gs": ModelEnvGS,
-    "model_env_es": ModelEnvES,
-    # dummy models:
-    "dummy_zerograd": DummyModelZeroGrads,
+#    "model_env_es": ModelEnvES,
 }
 
 
@@ -524,21 +387,23 @@ def _predict_vac(
     const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d) * expd
     d01const = (5.0 / (3.0 * lengthscale**2)) * expd
 
-    diff_ja = jnp.einsum("stf,sf->st", diff, jaccoef)
-    diff_t = jnp.einsum("stf,tfv->stv", diff, jacobian)
+    diff_jc = jnp.einsum("stf,sf->st", diff, jaccoef)
+    diff_jt = jnp.einsum("stf,tfv->stv", diff, jacobian)
 
-    d0kjam = -const * diff_ja
+    d0k_jc = -const * diff_jc
 
-    tmp1 = jnp.einsum("st,st->st", -d01const, diff_ja)
-    d01kjam = jnp.einsum("st,stv->stv", tmp1, diff_t)
+#    tmp = jnp.einsum("st,st->st", -d01const, diff_jc)
+#    d01k_jc_jt = jnp.einsum("st,stv->stv", tmp, diff_jt)
+    d01k_jc_jt = jnp.einsum("st,st,stv->stv", -d01const, diff_jc, diff_jt)
     diagonal = d01const * (1.0 + d)
     diagonal = diagonal[:, :, jnp.newaxis].repeat(nf, axis=2)
-    tmp2 = jnp.einsum("sf,stf->stf", jaccoef, diagonal)
-    d01kjam += jnp.einsum("stf,tfv->stv", tmp2, jacobian)
+#    tmp = jnp.einsum("sf,stf->stf", jaccoef, diagonal)
+#    d01k_jc_jt += jnp.einsum("stf,tfv->stv", tmp, jacobian)
+    d01k_jc_jt += jnp.einsum("sf,stf,tfv->stv", jaccoef, diagonal, jacobian)
 
-    energy = mu + jnp.einsum("st->t", d0kjam)
+    energy = mu + jnp.einsum("st->t", d0k_jc)
 
-    forces = jnp.einsum("stv->tv", d01kjam)
+    forces = jnp.einsum("stv->tv", d01k_jc_jt)
 
     return energy, forces.reshape(-1, 3)
 
@@ -579,11 +444,12 @@ def _predict_env(
     jacobian_qm_l = jacobian_qm[:, active_dims_l]
 
     lin = z1_l @ z2_l.T
-    d0kjal = jnp.einsum("sf,tf->st", jaccoef_l, z2_l)
-    d1kjl_qm = jnp.einsum("sf,tfv->stv", z1_l, jacobian_qm_l)
-    d1kl = z1_l
-    d01kjal_qm = jnp.einsum("sf,tfv->stv", jaccoef_l, jacobian_qm_l)
-    d0j1kal = jaccoef_l
+    d0k_jc_l = jnp.einsum("sf,tf->st", jaccoef_l, z2_l)
+    d1k_jtqm_l = jnp.einsum("sf,tfv->stv", z1_l, jacobian_qm_l)
+    d1k_l = z1_l
+    d01k_jc_jtqm_l = jnp.einsum("sf,tfv->stv", jaccoef_l, jacobian_qm_l)
+    d01k_jc_l = jaccoef_l
+#    d0j1kal = jaccoef_l
 
     lengthscale = params["kernel2"]["lengthscale"].value
 
@@ -602,33 +468,33 @@ def _predict_env(
 
     mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
 
-    diff_ja = jnp.einsum("stf,sf->st", diff_m, jaccoef_m)
-    diff_t_qm = jnp.einsum("stf,tfv->stv", diff_m, jacobian_qm_m)
+    diff_jc = jnp.einsum("stf,sf->st", diff_m, jaccoef_m)
+    diff_jtqm = jnp.einsum("stf,tfv->stv", diff_m, jacobian_qm_m)
 
-    d0kjam = -const * diff_ja
-    d1kjm_qm = -jnp.einsum("st,stv->stv", -const, diff_t_qm)
+    d0k_jc_m = -const * diff_jc
+    d1k_jtqm_m = -jnp.einsum("st,stv->stv", -const, diff_jtqm)
 
-    tmp1 = jnp.einsum("st,st->st", -d01const, diff_ja)
-    d01kjam_qm = jnp.einsum("st,stv->stv", tmp1, diff_t_qm)
+    tmp = jnp.einsum("st,st->st", -d01const, diff_jc)
+    d01k_jc_jtqm_m = jnp.einsum("st,stv->stv", tmp, diff_jtqm)
     diagonal = d01const * (1.0 + d_m)
     diagonal = diagonal[:, :, jnp.newaxis].repeat(nact_m, axis=2)
-    tmp2 = jnp.einsum("sf,stf->stf", jaccoef_m, diagonal)
-    d01kjam_qm += jnp.einsum("stf,tfv->stv", tmp2, jacobian_qm_m)
+    tmp = jnp.einsum("sf,stf->stf", jaccoef_m, diagonal)
+    d01k_jc_jtqm_m += jnp.einsum("stf,tfv->stv", tmp, jacobian_qm_m)
 
     energies = mu + jnp.einsum("st,st,s->t", lin, mat52, c_energies)
-    energies += jnp.einsum("st,st->t", lin, d0kjam)
-    energies += jnp.einsum("st,st->t", d0kjal, mat52)
+    energies += jnp.einsum("st,st->t", lin, d0k_jc_m)
+    energies += jnp.einsum("st,st->t", d0k_jc_l, mat52)
 
-    forces_qm = jnp.einsum("st,stv,s->tv", lin, d1kjm_qm, c_energies)
-    forces_qm += jnp.einsum("stv,st,s->tv", d1kjl_qm, mat52, c_energies)
-    forces_qm += jnp.einsum("stv,st->tv", d01kjal_qm, mat52)
-    forces_qm += jnp.einsum("st,stv->tv", d0kjal, d1kjm_qm)
-    forces_qm += jnp.einsum("st,stv->tv", d0kjam, d1kjl_qm)
-    forces_qm += jnp.einsum("stv,st->tv", d01kjam_qm, lin)
+    forces_qm = jnp.einsum("st,stv,s->tv", lin, d1k_jtqm_m, c_energies)
+    forces_qm += jnp.einsum("stv,st,s->tv", d1k_jtqm_l, mat52, c_energies)
+    forces_qm += jnp.einsum("stv,st->tv", d01k_jc_jtqm_l, mat52)
+    forces_qm += jnp.einsum("st,stv->tv", d0k_jc_l, d1k_jtqm_m)
+    forces_qm += jnp.einsum("st,stv->tv", d0k_jc_m, d1k_jtqm_l)
+    forces_qm += jnp.einsum("stv,st->tv", d01k_jc_jtqm_m, lin)
 
-    forces = jnp.einsum("sf,st,s->tf", d1kl, mat52, c_energies)
-    forces += jnp.einsum("sf,st->tf", d0j1kal, mat52)
-    forces += jnp.einsum("st,sf->tf", d0kjam, d1kl)
+    forces = jnp.einsum("sf,st,s->tf", d1k_l, mat52, c_energies)
+    forces += jnp.einsum("sf,st->tf", d01k_jc_l, mat52)
+    forces += jnp.einsum("st,sf->tf", d0k_jc_m, d1k_l)
 
     forces_mm = jnp.einsum("tf,tfv->tv", forces, jacobian_mm)
 

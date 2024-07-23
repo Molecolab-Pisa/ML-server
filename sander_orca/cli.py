@@ -172,23 +172,36 @@ def server():
 
                     # check whether a model-run is requested
                     cmd = inp.decode().strip()
-                    if cmd == "model-run":
-                        logprint("Requested calculation by sander.\n")
+                    print(cmd)
 
-                        if args.filebased:
+                    if args.filebased:
+                        if cmd == "model-run":
+                            logprint("Requested calculation by sander.\n")
+                            #                        if args.filebased:
                             # read input, predict, and write to file
                             model.run()
-                        else:
-                            # receive data via socket
+                            conn.sendall(b"model-fin   ")
+
+                        elif cmd == "server-stop":
+                            logprint(
+                                "Received request of server stop.\nStopping now..."
+                            )
+                            sys.exit(0)
+
+                    else:
+                        if cmd == "model-init":
                             system_data = jnp.zeros((2, 1), dtype)
                             system_data = recvall(conn, system_data)
                             nqm, nmm = int(system_data[0]), int(system_data[1])
                             sh_qm = (nqm, 3)
                             coords_qm = jnp.zeros(sh_qm, dtype)
-                            coords_qm = recvall(conn, coords_qm)
-                            if args.model_env is not None:
+                            if nmm > 0:
                                 sh_mm = (nmm, 4)
                                 mmcoordchg = jnp.zeros(sh_mm, dtype)
+                        elif cmd == "model-run":
+                            # receive data via socket
+                            coords_qm = recvall(conn, coords_qm)
+                            if nmm > 0:
                                 mmcoordchg = recvall(conn, mmcoordchg)
                                 coords_mm = mmcoordchg[:, :3]
                                 charges_mm = mmcoordchg[:, 3]
@@ -199,7 +212,6 @@ def server():
                                     charges_mm,
                                     filebased=args.filebased,
                                 )
-                                #                                conn.sendall(grad_qm)
                                 conn.sendall(grad_mm)
                             else:
                                 energy, grad_qm = model.run(
@@ -209,12 +221,77 @@ def server():
                             conn.sendall(grad_qm)
                             conn.sendall(struct.pack("<d", energy))
 
-                        # tell the client that we have finished
-                        conn.sendall(b"model-fin   ")
+                            # tell the client that we have finished
+                            conn.sendall(b"model-fin   ")
 
-                    elif cmd == "server-stop":
-                        logprint("Received request of server stop.\nStopping now...")
-                        sys.exit(0)
+                        elif cmd == "server-stop":
+                            logprint(
+                                "Received request of server stop.\nStopping now..."
+                            )
+                            sys.exit(0)
+
+
+#        # keep listening and accepting connections from clients
+#        while True:
+#            conn, (host, port) = s.accept()
+#
+#            # open the socket representing the connection
+#            with conn:
+#                logprint(
+#                    f"Performed three-way handshake on host={host}, port={port}.\nClient accepted..."
+#                )
+#
+#                # keep receiving input from the client
+#                while True:
+#                    inp = conn.recv(12)
+#                    if not inp:
+#                        break
+#
+#                    # check whether a model-run is requested
+#                    cmd = inp.decode().strip()
+#                    if cmd == "model-run":
+#                        logprint("Requested calculation by sander.\n")
+#
+#                        if args.filebased:
+#                            # read input, predict, and write to file
+#                            model.run()
+#                        else:
+#                            # receive data via socket
+#                            system_data = jnp.zeros((2, 1), dtype)
+#                            system_data = recvall(conn, system_data)
+#                            nqm, nmm = int(system_data[0]), int(system_data[1])
+#                            sh_qm = (nqm, 3)
+#                            coords_qm = jnp.zeros(sh_qm, dtype)
+#                            coords_qm = recvall(conn, coords_qm)
+#                            if args.model_env is not None:
+#                                sh_mm = (nmm, 4)
+#                                mmcoordchg = jnp.zeros(sh_mm, dtype)
+#                                mmcoordchg = recvall(conn, mmcoordchg)
+#                                coords_mm = mmcoordchg[:, :3]
+#                                charges_mm = mmcoordchg[:, 3]
+#                                # run the prediction
+#                                energy, grad_qm, grad_mm = model.run(
+#                                    coords_qm,
+#                                    coords_mm,
+#                                    charges_mm,
+#                                    filebased=args.filebased,
+#                                )
+#                                #                                conn.sendall(grad_qm)
+#                                conn.sendall(grad_mm)
+#                            else:
+#                                energy, grad_qm = model.run(
+#                                    coords_qm, filebased=args.filebased
+#                                )
+#
+#                            conn.sendall(grad_qm)
+#                            conn.sendall(struct.pack("<d", energy))
+#
+#                        # tell the client that we have finished
+#                        conn.sendall(b"model-fin   ")
+#
+#                    elif cmd == "server-stop":
+#                        logprint("Received request of server stop.\nStopping now...")
+#                        sys.exit(0)
 
 
 # ============================================================
