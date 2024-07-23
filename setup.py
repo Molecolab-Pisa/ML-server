@@ -2,8 +2,9 @@ from setuptools import find_packages, setup
 
 entry_points = {
     "console_scripts": [
-        "ml_server=sander_orca.cli:server",
+        "ml-server=sander_orca.cli:server",
         "orca=sander_orca.cli:orca_client",
+        "ml-stop=sander_orca.cli:stop_server",
     ]
 }
 

@@ -3,8 +3,8 @@ import socket
 import sys
 from .socket_utils import recvall 
 
-HOST = "127.0.0.1"  # Standard loopback interface address (localhost)
-DEFAULT_PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
+HOST = "127.0.0.1"  
+DEFAULT_PORT = 3004 
 
 
 # ============================================================
@@ -13,7 +13,7 @@ DEFAULT_PORT = 3004  # Port to listen on (non-privileged ports are > 1023)
 
 
 def get_port():
-    port = os.getenv("SANDER_ORCA_PORT")
+    port = os.getenv("ML_SERVER_PORT")
     if port is None:
         port = DEFAULT_PORT
     else:
@@ -44,7 +44,7 @@ def server_cli_parse():
 
         return ExitParser
 
-    parser = argparse.ArgumentParser(description="ML server")
+    parser = argparse.ArgumentParser(description="ML-server")
 
     # required arguments
     required = parser.add_argument_group("required")
@@ -72,7 +72,7 @@ def server_cli_parse():
         "--filebased",
         action="store_true",
         required=None,
-        help="Use file based interface",
+        help="Use file-based interface",
     )
 
     optional.add_argument(
@@ -126,7 +126,7 @@ def server():
         "prints to file (stdout or logfile)"
         print(msg, file=args.logstream)
 
-    logprint("Activating the ML server...")
+    logprint("Activating the ML-server...")
     logprint(f"Server running on PID {os.getpid()}")
     logprint("Server is running with the following arguments:")
     for arg in vars(args):
@@ -136,8 +136,6 @@ def server():
     PORT = get_port()
     logprint(f"Requested opening a socket on {HOST}:{PORT}")
 
-    # AF_INET: internet address family for IPv4
-    # SOCK_STREAM: Transmission Control Protocol (TCP) socket type
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         # bind and wait for connections
         s.bind((HOST, PORT))
@@ -146,14 +144,12 @@ def server():
         # load the requested model
         if not args.model_vac in available_models.keys():
             raise ValueError("requested QM model is not available")
+        model = available_models[args.model_vac](args.workdir).load()
 
         if args.model_env is not None:
             if not args.model_env in available_models.keys():
                 raise ValueError("requested environment model is not available")
-            model_vac = available_models[args.model_vac](args.workdir).load()
-            model = available_models[args.model_env](args.workdir, model_vac).load()
-        else:
-            model = available_models[args.model_vac](args.workdir).load()
+            model = available_models[args.model_env](args.workdir, model_vac=model).load()
 
         # keep listening and accepting connections from clients
         while True:
@@ -179,7 +175,7 @@ def server():
                         if cmd == "model-run":
                             logprint("Requested calculation by sander.\n")
                             # read input, predict, and write to file
-                            model.run()
+                            model.run(filebased=True)
                             conn.sendall(b"model-fin   ")
 
                         elif cmd == "server-stop":
@@ -210,12 +206,12 @@ def server():
                                     coords_qm,
                                     coords_mm,
                                     charges_mm,
-                                    filebased=args.filebased,
+                                    filebased=False,
                                 )
                                 conn.sendall(grad_mm)
                             else:
                                 energy, grad_qm = model.run(
-                                    coords_qm, filebased=args.filebased
+                                    coords_qm, filebased=False
                                 )
 
                             conn.sendall(grad_qm)
@@ -249,5 +245,5 @@ def stop_server():
     PORT = get_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
-        s.sendall(b"server-stop")
-        out = s.recv(1024)
+        s.sendall(b"server-stop ")
+        out = s.recv(12)

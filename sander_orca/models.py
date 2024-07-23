@@ -163,7 +163,7 @@ class ModelEnvGS(BaseModelEnv):
         jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
         return descr, jacobian_qm
 
-    def predict(self, coords_qm, coords_mm, charges_mm, **kwargs):
+    def predict(self, coords_qm, coords_mm, charges_mm):
 
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
@@ -261,7 +261,7 @@ class ModelEnvES(BaseModelEnv):
         jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
         return descr, jacobian_qm
 
-    def predict(self, coords_qm, coords_mm, charges_mm, **kwargs):
+    def predict(self, coords_qm, coords_mm, charges_mm):
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
         ind_jac = inv_dist_jac(coords_qm)
@@ -423,13 +423,9 @@ def _predict_env(
     d0k_jc_m = -const * diff_jc
     d1k_jtqm_m = -jnp.einsum("st,stv->stv", -const, diff_jtqm)
 
-#    tmp = jnp.einsum("st,st->st", -d01const, diff_jc)
-#    d01k_jc_jtqm_m = jnp.einsum("st,stv->stv", tmp, diff_jtqm)
     d01k_jc_jtqm_m = jnp.einsum("st,st,stv->stv", -d01const, diff_jc, diff_jtqm)
     diagonal = d01const * (1.0 + d_m)
     diagonal = diagonal[:, :, jnp.newaxis].repeat(nact_m, axis=2)
-#    tmp = jnp.einsum("sf,stf->stf", jaccoef_m, diagonal)
-#    d01k_jc_jtqm_m += jnp.einsum("stf,tfv->stv", tmp, jacobian_qm_m)
     d01k_jc_jtqm_m += jnp.einsum("sf,stf,tfv->stv", jaccoef_m, diagonal, jacobian_qm_m)
 
     energy = mu + jnp.einsum("st,st,s->t", lin, mat52, c_energies)
@@ -506,56 +502,6 @@ def squared_distances(x1: ArrayLike, x2: ArrayLike) -> Array:
     x2s = jnp.sum(jnp.square(x2), axis=-1)
     dist = x1s[:, jnp.newaxis] - 2 * jnp.dot(x1, x2.T) + x2s + jitter
     return dist
-
-
-@jit
-def sq_dist(coords_qm: ArrayLike) -> Array:
-    """squared distances descriptor
-
-        This function takes the off-diagonal part of the
-        squared distances matrix.
-
-    Args:
-        coords_qm: shape (n_atoms_qm, 3)
-    Returns:
-        squared distances: shape (1, n_atoms_qm (n_atoms_qm - 1)/2)
-    """
-    n_qm, _ = coords_qm.shape
-    dist = squared_distances(coords_qm, coords_qm)
-    return jnp.expand_dims(dist[jnp.triu_indices(n_qm, k=1)], axis=0)
-
-
-@jit
-def sq_dist_jac(coords_qm: ArrayLike):
-    """Jacobian of the squared distances descriptor
-
-    Args:
-        coords_qm: shape (n_atoms_qm, 3)
-    Returns:
-        jacobian: shape (1, n_atoms_qm (n_atoms_qm - 1)/2, n_atoms_qm*3)
-    """
-
-    n_qm, _ = coords_qm.shape
-    n_feat = int(n_qm * (n_qm - 1) / 2)
-    jac_dist = jnp.zeros((n_feat, n_qm, 3))
-
-    def row_scan(i, jac_dist):
-        def inner_func(j, jac_dist):
-            diff = coords_qm[i] - coords_qm[j]
-            k = (n_qm * (n_qm - 1) / 2) - (n_qm - i) * ((n_qm - i) - 1) / 2 + j - i - 1
-
-            def select(atom, jac_dist):
-                return jac_dist.at[k.astype(int), atom].set(
-                    jnp.where(atom == i, 2 * diff, jnp.where(atom == j, -2 * diff, 0.0))
-                )
-
-            return jax.lax.fori_loop(0, n_qm, select, jac_dist)
-
-        return jax.lax.fori_loop(i + 1, n_qm, inner_func, jac_dist)
-
-    jac_dist = jax.lax.fori_loop(0, n_qm - 1, row_scan, jac_dist)
-
-    return jnp.expand_dims(jac_dist.reshape(n_feat, n_qm * 3), axis=0)
 
 
 @jit
