@@ -1,10 +1,10 @@
 import os
 import socket
 import sys
-from .socket_utils import recvall 
+from .socket_utils import recvall
 
-HOST = "127.0.0.1"  
-DEFAULT_PORT = 3004 
+HOST = "127.0.0.1"
+DEFAULT_PORT = 3004
 
 
 # ============================================================
@@ -142,14 +142,16 @@ def server():
         s.listen()
 
         # load the requested model
-        if not args.model_vac in available_models.keys():
+        if args.model_vac not in available_models.keys():
             raise ValueError("requested QM model is not available")
         model = available_models[args.model_vac](args.workdir).load()
 
         if args.model_env is not None:
-            if not args.model_env in available_models.keys():
+            if args.model_env not in available_models.keys():
                 raise ValueError("requested environment model is not available")
-            model = available_models[args.model_env](args.workdir, model_vac=model).load()
+            model = available_models[args.model_env](
+                args.workdir, model_vac=model
+            ).load()
 
         # keep listening and accepting connections from clients
         while True:
@@ -210,9 +212,7 @@ def server():
                                 )
                                 conn.sendall(grad_mm)
                             else:
-                                energy, grad_qm = model.run(
-                                    coords_qm, filebased=False
-                                )
+                                energy, grad_qm = model.run(coords_qm, filebased=False)
 
                             conn.sendall(grad_qm)
                             conn.sendall(struct.pack("<d", energy))
@@ -226,6 +226,7 @@ def server():
                             )
                             sys.exit(0)
 
+
 # ============================================================
 # Clients
 # ============================================================
@@ -237,7 +238,7 @@ def orca_client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         s.sendall(b"model-run   ")
-        out = s.recv(12)
+        s.recv(12)
 
 
 def stop_server():
@@ -246,4 +247,4 @@ def stop_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         s.sendall(b"server-stop ")
-        out = s.recv(12)
+        s.recv(12)

@@ -3,14 +3,8 @@ from typing import Tuple, Optional
 from abc import ABC, abstractmethod
 
 import os
-from functools import partial
-from typing import Dict
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-from jax import Array, jit
-from jax.typing import ArrayLike
+from jax import Array
 
 from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
@@ -213,9 +207,7 @@ class BaseModelVac(BaseModel):
 
         if filebased:
             # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energy, grads_qm=grads_qm, grads_mm=None
-            )
+            self.write_engrad_pcgrad(e_tot=energy, grads_qm=grads_qm, grads_mm=None)
         else:
             return energy, grads_qm
 
@@ -261,7 +253,10 @@ class BaseModelEnv(BaseModel):
 
     @abstractmethod
     def predict(
-        self, coords_qm: Array, coords_mm: Array, charges_mm: Array,
+        self,
+        coords_qm: Array,
+        coords_mm: Array,
+        charges_mm: Array,
     ) -> Optional[Array, Array, Array]:
         """predicts the QM + QM/MM energy and QM and MM gradients.
 
@@ -330,8 +325,6 @@ class BaseModelEnv(BaseModel):
 
         if filebased:
             # write to file
-            self.write_engrad_pcgrad(
-                e_tot=energy, grads_qm=grads_qm, grads_mm=grads_mm
-            )
+            self.write_engrad_pcgrad(e_tot=energy, grads_qm=grads_qm, grads_mm=grads_mm)
         else:
             return energy, grads_qm, grads_mm

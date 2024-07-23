@@ -112,4 +112,3 @@ def write_pcgrad(path: str, grads_mm: np.ndarray) -> None:
             header="%d" % num_mm,
             comments="",
         )
-

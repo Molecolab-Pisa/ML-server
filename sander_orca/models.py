@@ -1,10 +1,11 @@
+from __future__ import annotations
+from typing import Dict
+
 import os
 from functools import partial
-from typing import Dict
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from gpx.bijectors import Softplus
 from gpx.kernels import Linear, Matern52, Prod
 from gpx.mean_functions import zero_mean
@@ -23,19 +24,19 @@ AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models")
 H2kcal = 627.5094740631
 Bohr2Ang = 0.529177210903
 
+
 class ModelVacGS(BaseModelVac):
     def __init__(self, workdir):
         super().__init__(workdir)
 
     def load(self):
-        l = 1.0
-        s = 0.1
-
         lengthscale = Parameter(
-            l, trainable=False, bijector=Softplus(), prior=NormalPrior()
+            1.0, trainable=False, bijector=Softplus(), prior=NormalPrior()
         )
 
-        sigma = Parameter(s, trainable=False, bijector=Softplus(), prior=NormalPrior())
+        sigma = Parameter(
+            0.1, trainable=False, bijector=Softplus(), prior=NormalPrior()
+        )
 
         kernel_params = dict(lengthscale=lengthscale)
 
@@ -67,14 +68,13 @@ class ModelVacES(BaseModelVac):
         super().__init__(workdir)
 
     def load(self):
-        l = 1.0
-        s = 0.1
-
         lengthscale = Parameter(
-            l, trainable=False, bijector=Softplus(), prior=NormalPrior()
+            1.0, trainable=False, bijector=Softplus(), prior=NormalPrior()
         )
 
-        sigma = Parameter(s, trainable=False, bijector=Softplus(), prior=NormalPrior())
+        sigma = Parameter(
+            0.1, trainable=False, bijector=Softplus(), prior=NormalPrior()
+        )
 
         kernel_params = dict(lengthscale=lengthscale)
 
@@ -164,7 +164,6 @@ class ModelEnvGS(BaseModelEnv):
         return descr, jacobian_qm
 
     def predict(self, coords_qm, coords_mm, charges_mm):
-
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
         ind_jac = inv_dist_jac(coords_qm)
@@ -174,12 +173,12 @@ class ModelEnvGS(BaseModelEnv):
         pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
 
         # concatenate descriptors
-        descr, jacobian_qm = self.get_input(
-            ind, ind_jac, pot, pot_jac_qm
-        )
+        descr, jacobian_qm = self.get_input(ind, ind_jac, pot, pot_jac_qm)
 
         # predict energy and grads in vacuum
-        energy_vac, grads_vac = self.model_vac.predict(coords_qm, ind=ind, ind_jac=ind_jac)
+        energy_vac, grads_vac = self.model_vac.predict(
+            coords_qm, ind=ind, ind_jac=ind_jac
+        )
 
         # predict QM/MM interaction energy and grads
         energy_env, grads_env_qm, grads_env_mm = predict_env(
@@ -195,7 +194,6 @@ class ModelEnvGS(BaseModelEnv):
         grads_mm = grads_env_mm
 
         return energy, grads_qm, grads_mm
-
 
 
 class ModelEnvES(BaseModelEnv):
@@ -271,12 +269,12 @@ class ModelEnvES(BaseModelEnv):
         pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
 
         # concatenate descriptors
-        descr, jacobian_qm = self.get_input(
-            ind, ind_jac, pot, pot_jac_qm
-        )
+        descr, jacobian_qm = self.get_input(ind, ind_jac, pot, pot_jac_qm)
 
         # predict energy and grads in vacuum
-        energy_vac, grads_vac = self.model_vac.predict(coords_qm, ind=ind, ind_jac=ind_jac)
+        energy_vac, grads_vac = self.model_vac.predict(
+            coords_qm, ind=ind, ind_jac=ind_jac
+        )
 
         # predict QM/MM interaction energy and grads
         energy_env, grads_env_qm, grads_env_mm = predict_env(
@@ -327,7 +325,6 @@ def _predict_vac(
     jacobian: ArrayLike,
     mu: ArrayLike,
 ) -> Array:
-
     lengthscale = params["lengthscale"].value
 
     nf = x1.shape[1]
@@ -360,7 +357,6 @@ def _predict_vac(
 
 @partial(jit, static_argnums=0)
 def predict_vac(model: ModelState, x: ArrayLike, jacobian: ArrayLike):
-
     kernel_params = model.state.params["kernel_params"]
     return _predict_vac(
         x1=model.state.x_train,
@@ -384,7 +380,6 @@ def _predict_env(
     active_dims_m: ArrayLike,
     active_dims_l: ArrayLike,
 ) -> Array:
-
     ns1, nf1 = x1.shape
     ns2, nf2 = x2.shape
 
@@ -611,7 +606,6 @@ def elec_pot_jac(
     )
 
     def row_scan(i, jac_pot_qm):
-
         deriv = -jnp.sum(
             (charges_mm[:, jnp.newaxis] * diff[i] / d[i, :, jnp.newaxis] ** 3), axis=0
         )

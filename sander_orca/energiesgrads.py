@@ -1,11 +1,7 @@
-from functools import partial
-from typing import Any, Callable, Dict, Tuple
+from __future__ import annotations
+from typing import Any, Callable, Dict
 
-import jax.numpy as jnp
-from gpx.models._gpr import _A_lhs
 from gpx.parameters import ModelState, Parameter
-from jax import Array, jit
-from jax.typing import ArrayLike
 
 ParameterDict = Dict[str, Parameter]
 Kernel = Any
