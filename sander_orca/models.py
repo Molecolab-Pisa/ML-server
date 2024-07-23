@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 import os
 from functools import partial
@@ -26,10 +26,17 @@ Bohr2Ang = 0.529177210903
 
 
 class ModelVacGS(BaseModelVac):
-    def __init__(self, workdir):
+    """Model for the QM part only (vacuum), ground state, 3-hydroxyflavone.
+
+    Predicts the QM energies and QM gradients with Gaussian process regression
+    using a Matern(5/2) kernel on the inverse distances descriptor.
+    See __ADD_PAPER_LINK__.
+    """
+
+    def __init__(self, workdir: str) -> None:
         super().__init__(workdir)
 
-    def load(self):
+    def load(self) -> ModelVacGS:
         lengthscale = Parameter(
             1.0, trainable=False, bijector=Softplus(), prior=NormalPrior()
         )
@@ -53,7 +60,32 @@ class ModelVacGS(BaseModelVac):
         self.constant = model.state.constant
         return self
 
-    def predict(self, coords_qm, ind=None, ind_jac=None, **kwargs):
+    def predict(
+        self,
+        coords_qm: Array,
+        ind: Optional[Array] = None,
+        ind_jac: Optional[Array] = None,
+        **kwargs,
+    ) -> Tuple[float, Array]:
+        """predicts the QM energy and QM gradients
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        ind: array, shape (num_ID, 3)
+            inverse distances descriptor
+            num_ID = num_QM_atoms * (num_QM_atoms - 1) / 2
+        ind_jac: array, shape (num_ID, 3 * num_QM_atoms)
+            jacobian of the inverse distances descriptor.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        """
         if ind is None:
             ind = inv_dist(coords_qm)
         if ind_jac is None:
@@ -64,10 +96,17 @@ class ModelVacGS(BaseModelVac):
 
 
 class ModelVacES(BaseModelVac):
-    def __init__(self, workdir):
+    """Model for the QM part only (vacuum), excited state, 3-hydroxyflavone.
+
+    Predicts the QM energies and QM gradients with Gaussian process regression
+    using a Matern(5/2) kernel on the inverse distances descriptor.
+    See __ADD_PAPER_LINK__.
+    """
+
+    def __init__(self, workdir: str) -> None:
         super().__init__(workdir)
 
-    def load(self):
+    def load(self) -> ModelVacES:
         lengthscale = Parameter(
             1.0, trainable=False, bijector=Softplus(), prior=NormalPrior()
         )
@@ -91,7 +130,32 @@ class ModelVacES(BaseModelVac):
         self.constant = model.state.constant
         return self
 
-    def predict(self, coords_qm, ind=None, ind_jac=None, **kwargs):
+    def predict(
+        self,
+        coords_qm: Array,
+        ind: Optional[Array] = None,
+        ind_jac: Optional[Array] = None,
+        **kwargs,
+    ) -> Tuple[float, Array]:
+        """predicts the QM energy and QM gradients
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        ind: array, shape (num_ID, 3)
+            inverse distances descriptor
+            num_ID = num_QM_atoms * (num_QM_atoms - 1) / 2
+        ind_jac: array, shape (num_ID, 3 * num_QM_atoms)
+            jacobian of the inverse distances descriptor.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        """
         if ind is None:
             ind = inv_dist(coords_qm)
         if ind_jac is None:
@@ -102,23 +166,30 @@ class ModelVacES(BaseModelVac):
 
 
 class ModelEnvGS(BaseModelEnv):
-    def __init__(self, workdir, model_vac):
+    """Environment model, ground state, 3-hydroxyflavone.
+
+    Predicts the energy of the QM part plus the QM/MM interaction, and the
+    gradients of that energy w.r.t. the QM and MM atoms.
+    The prediction is done with Gaussian process regression using a product kernel,
+    where a linear kernel operates on the electrostatic potential of the MM part
+    acting on the QM atoms, and a Matern(5/2) kernel operates on the inverse
+    distances of the QM atoms.
+    See __ADD_PAPER_LINK__.
+    """
+
+    def __init__(self, workdir: str, model_vac: BaseModelVac) -> None:
         super().__init__(workdir, model_vac=model_vac)
 
-    def load(self):
-        s_energies = 1e-3
-        s_grads = 1e-3
-        k2_l = 5.0
-
+    def load(self) -> ModelEnvGS:
         sigma_energies = Parameter(
-            s_energies,
+            1e-3,
             trainable=True,
             bijector=Softplus(),
             prior=NormalPrior(),
         )
 
         sigma_grads = Parameter(
-            s_grads,
+            1e-3,
             trainable=True,
             bijector=Softplus(),
             prior=NormalPrior(),
@@ -126,7 +197,7 @@ class ModelEnvGS(BaseModelEnv):
 
         k2_lengthscale = dict(
             lengthscale=Parameter(
-                k2_l,
+                5.0,
                 trainable=True,
                 bijector=Softplus(),
                 prior=NormalPrior(),
@@ -158,12 +229,42 @@ class ModelEnvGS(BaseModelEnv):
         self._model = model
         return self
 
-    def get_input(self, ind_descr, ind_jac, pot_descr, pot_jac_qm):
+    def get_input(
+        self, ind_descr: Array, ind_jac: Array, pot_descr: Array, pot_jac_qm: Array
+    ) -> Tuple[Array, Array]:
+        """concatenates the inverse distances and the electrostatic potential
+        descriptors/jacobians.
+        """
         descr = jnp.concatenate((ind_descr, pot_descr), axis=-1)
         jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
         return descr, jacobian_qm
 
-    def predict(self, coords_qm, coords_mm, charges_mm):
+    def predict(
+        self, coords_qm: Array, coords_mm: Array, charges_mm: Array
+    ) -> Tuple[float, Array, Array]:
+        """predicts the QM + QM/MM energy and QM and MM gradients
+
+        Predicts the energy of the QM part plus the QM/MM interaction, and
+        the gradients of that energy w.r.t. the QM and MM atoms.
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        coords_mm: array, shape (num_MM_atoms, 3)
+            coordinates of the MM part.
+        charges_mm: array, shape (num_MM_atoms,)
+            charges of the MM part.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads_qm: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        grads_mm: array, shape (num_MM_atoms, 3)
+            gradients of the energy w.r.t. the MM atoms, [hartree/bohr].
+        """
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
         ind_jac = inv_dist_jac(coords_qm)
@@ -176,6 +277,7 @@ class ModelEnvGS(BaseModelEnv):
         descr, jacobian_qm = self.get_input(ind, ind_jac, pot, pot_jac_qm)
 
         # predict energy and grads in vacuum
+        # note: we send ind and ind_jac to avoid recomputing the descriptor
         energy_vac, grads_vac = self.model_vac.predict(
             coords_qm, ind=ind, ind_jac=ind_jac
         )
@@ -197,24 +299,31 @@ class ModelEnvGS(BaseModelEnv):
 
 
 class ModelEnvES(BaseModelEnv):
-    def __init__(self, workdir, model_vac):
+    """Environment model, excited state, 3-hydroxyflavone.
+
+    Predicts the energy of the QM part plus the QM/MM interaction, and the
+    gradients of that energy w.r.t. the QM and MM atoms.
+    The prediction is done with Gaussian process regression using a product kernel,
+    where a linear kernel operates on the electrostatic potential of the MM part
+    acting on the QM atoms, and a Matern(5/2) kernel operates on the inverse
+    distances of the QM atoms.
+    See __ADD_PAPER_LINK__.
+    """
+
+    def __init__(self, workdir: str, model_vac: BaseModelVac) -> None:
         super().__init__(workdir, model_vac)
         self.model_vac = model_vac
 
-    def load(self):
-        s_energies = 1e-3
-        s_grads = 1e-3
-        k2_l = 5.0
-
+    def load(self) -> ModelEnvES:
         sigma_energies = Parameter(
-            s_energies,
+            1e-3,
             trainable=True,
             bijector=Softplus(),
             prior=NormalPrior(),
         )
 
         sigma_grads = Parameter(
-            s_grads,
+            1e-3,
             trainable=True,
             bijector=Softplus(),
             prior=NormalPrior(),
@@ -222,10 +331,10 @@ class ModelEnvES(BaseModelEnv):
 
         k2_lengthscale = dict(
             lengthscale=Parameter(
-                k2_l,
+                5.0,
                 trainable=True,
                 bijector=Softplus(),
-                prior=NormalPrior(loc=k2_l, scale=10.0),
+                prior=NormalPrior(loc=5.0, scale=10.0),
             )
         )
 
@@ -254,12 +363,42 @@ class ModelEnvES(BaseModelEnv):
         self._model = model
         return self
 
-    def get_input(self, ind_descr, ind_jac, pot_descr, pot_jac_qm):
+    def get_input(
+        self, ind_descr: Array, ind_jac: Array, pot_descr: Array, pot_jac_qm: Array
+    ) -> Tuple[Array, Array]:
+        """concatenates the inverse distances and the electrostatic potential
+        descriptors/jacobians.
+        """
         descr = jnp.concatenate((ind_descr, pot_descr), axis=-1)
         jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
         return descr, jacobian_qm
 
-    def predict(self, coords_qm, coords_mm, charges_mm):
+    def predict(
+        self, coords_qm: Array, coords_mm: Array, charges_mm: Array
+    ) -> Tuple[float, Array, Array]:
+        """predicts the QM + QM/MM energy and QM and MM gradients
+
+        Predicts the energy of the QM part plus the QM/MM interaction, and
+        the gradients of that energy w.r.t. the QM and MM atoms.
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        coords_mm: array, shape (num_MM_atoms, 3)
+            coordinates of the MM part.
+        charges_mm: array, shape (num_MM_atoms,)
+            charges of the MM part.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads_qm: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        grads_mm: array, shape (num_MM_atoms, 3)
+            gradients of the energy w.r.t. the MM atoms, [hartree/bohr].
+        """
         # descriptor for the QM part
         ind = inv_dist(coords_qm)
         ind_jac = inv_dist_jac(coords_qm)

@@ -1,4 +1,4 @@
-"Here we define functions needed for IO between sander and fake ORCA"
+"Here we define functions needed for the file-based interface with Sander"
 from __future__ import annotations
 
 from typing import Tuple
