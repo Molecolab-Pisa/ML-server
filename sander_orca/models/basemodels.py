@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 from jax import Array
 
-from .io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
+from ..io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
 
 class BaseModel(ABC):
