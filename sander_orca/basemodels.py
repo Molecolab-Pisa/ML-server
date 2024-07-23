@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Tuple, Optional
-from abc import ABC, abstractmethod
 
 import os
+from abc import ABC, abstractmethod
+from typing import Optional, Tuple
 
 from jax import Array
 

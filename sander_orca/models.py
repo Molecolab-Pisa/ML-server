@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 
 import os
 from functools import partial
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
@@ -15,9 +16,8 @@ from gpx.priors import NormalPrior
 from jax import Array, jit
 from jax.typing import ArrayLike
 
+from .basemodels import BaseModelEnv, BaseModelVac
 from .energiesgrads import EnergiesGrads
-
-from .basemodels import BaseModelVac, BaseModelEnv
 
 # Folder to the parameters of the available models
 AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models")

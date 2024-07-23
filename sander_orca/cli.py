@@ -1,6 +1,7 @@
 import os
 import socket
 import sys
+
 from .socket_utils import recvall
 
 HOST = "127.0.0.1"
@@ -187,22 +188,25 @@ def server():
                             sys.exit(0)
 
                     else:
-                        if cmd == "model-init":
+                        if cmd == "model-run":
+                            # receive data via socket
                             system_data = jnp.zeros((2, 1), dtype)
                             system_data = recvall(conn, system_data)
                             nqm, nmm = int(system_data[0]), int(system_data[1])
+
                             sh_qm = (nqm, 3)
                             coords_qm = jnp.zeros(sh_qm, dtype)
+                            coords_qm = recvall(conn, coords_qm)
+
                             if nmm > 0:
+
                                 sh_mm = (nmm, 4)
                                 mmcoordchg = jnp.zeros(sh_mm, dtype)
-                        elif cmd == "model-run":
-                            # receive data via socket
-                            coords_qm = recvall(conn, coords_qm)
-                            if nmm > 0:
                                 mmcoordchg = recvall(conn, mmcoordchg)
+
                                 coords_mm = mmcoordchg[:, :3]
                                 charges_mm = mmcoordchg[:, 3]
+
                                 # run the prediction
                                 energy, grad_qm, grad_mm = model.run(
                                     coords_qm,
