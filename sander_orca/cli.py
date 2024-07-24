@@ -114,7 +114,6 @@ def server_cli_parse():
 def server():
     import struct
 
-    import jax.numpy as jnp
     import numpy as np
 
     from .models import available_models
@@ -190,18 +189,18 @@ def server():
                     else:
                         if cmd == "model-run":
                             # receive data via socket
-                            system_data = jnp.zeros((2, 1), dtype)
+                            system_data = np.zeros((2, 1), dtype)
                             system_data = recvall(conn, system_data)
                             nqm, nmm = int(system_data[0]), int(system_data[1])
 
                             sh_qm = (nqm, 3)
-                            coords_qm = jnp.zeros(sh_qm, dtype)
+                            coords_qm = np.zeros(sh_qm, dtype)
                             coords_qm = recvall(conn, coords_qm)
 
                             if nmm > 0:
 
                                 sh_mm = (nmm, 4)
-                                mmcoordchg = jnp.zeros(sh_mm, dtype)
+                                mmcoordchg = np.zeros(sh_mm, dtype)
                                 mmcoordchg = recvall(conn, mmcoordchg)
 
                                 coords_mm = mmcoordchg[:, :3]
