@@ -4,7 +4,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
-from jax import Array
+import numpy as np
 
 from ..io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
@@ -31,7 +31,7 @@ class BaseModel(ABC):
         self.engrad = os.path.join(workdir, "orc_job.engrad")
         self.pcgrad = os.path.join(workdir, "orc_job.pcgrad")
 
-    def read_sander_xyz(self) -> Tuple[int, Array, Array, int, Array, Array]:
+    def read_sander_xyz(self) -> Tuple[int, np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
         """filebased: reads the inpfile.xyz and ptchrg.xyz
 
         Only used in the filebased interface. Reads the files containing
@@ -52,7 +52,7 @@ class BaseModel(ABC):
         return num_qm, coords_qm, elems_qm, num_mm, coords_mm, charges_mm
 
     def write_engrad_pcgrad(
-        self, e_tot: float = None, grads_qm: Array = None, grads_mm: Array = None
+        self, e_tot: float = None, grads_qm: np.ndarray = None, grads_mm: np.ndarray = None
     ) -> None:
         """filebased: writes the engrad and pcgrad files
 
@@ -145,7 +145,7 @@ class BaseModelVac(BaseModel):
         super().__init__(workdir)
 
     @abstractmethod
-    def predict(self, coords_qm: Array, **kwargs) -> Tuple[float, Array]:
+    def predict(self, coords_qm: np.ndarray, **kwargs) -> Tuple[float, np.ndarray]:
         """predicts the QM energy and QM gradients.
 
         Predicts the energy for the QM part and its gradients.
@@ -177,8 +177,8 @@ class BaseModelVac(BaseModel):
         pass
 
     def run(
-        self, coords_qm: Array = None, filebased: Optional[bool] = True
-    ) -> Optional[Tuple[Array, Array]]:
+        self, coords_qm: np.ndarray = None, filebased: Optional[bool] = True
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """runs the prediction
 
         This is the higher level wrapper around self.predict that is
@@ -254,10 +254,10 @@ class BaseModelEnv(BaseModel):
     @abstractmethod
     def predict(
         self,
-        coords_qm: Array,
-        coords_mm: Array,
-        charges_mm: Array,
-    ) -> Optional[Array, Array, Array]:
+        coords_qm: np.ndarray,
+        coords_mm: np.ndarray,
+        charges_mm: np.ndarray,
+    ) -> Optional[np.ndarray, np.ndarray, np.ndarray]:
         """predicts the QM + QM/MM energy and QM and MM gradients.
 
         Predicts the energy for the QM part plus the QM/MM interaction,
@@ -286,11 +286,11 @@ class BaseModelEnv(BaseModel):
 
     def run(
         self,
-        coords_qm: Array = None,
-        coords_mm: Array = None,
-        charges_mm: Array = None,
+        coords_qm: np.ndarray = None,
+        coords_mm: np.ndarray = None,
+        charges_mm: np.ndarray = None,
         filebased: Optional[bool] = True,
-    ) -> Optional[Tuple[Array, Array, Array]]:
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """runs the prediction
 
         This is the higher level wrapper around self.predict that is
