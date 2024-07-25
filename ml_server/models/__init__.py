@@ -16,19 +16,15 @@
 #
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from .models_3HF import ModelEnvES, ModelEnvGS, ModelVacES, ModelVacGS
-
+#
 # ============================================================
 # Expose the available models
 # ============================================================
 
 available_models = {
     # models: vacuum
-    "model_vac_gs": ModelVacGS,
-    "model_vac_es": ModelVacES,
+#    "model_vac_gs": ModelVacGS
     # models: environment
-    "model_env_gs": ModelEnvGS,
-    "model_env_es": ModelEnvES,
 }
 
 
