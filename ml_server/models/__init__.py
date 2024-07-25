@@ -51,8 +51,12 @@ class LazyDict(Mapping):
         self._raw_dict = dict(*args, **kw)
 
     def __getitem__(self, key):
-        func, arg = self._raw_dict.__getitem__(key)
-        return func(arg)
+        try:
+            func, arg = self._raw_dict.__getitem__(key)
+            val = func(arg)
+        except Exception:
+            val = self._raw_dict.__getitem__(key)
+        return val
 
     def __iter__(self):
         return iter(self._raw_dict)
@@ -64,7 +68,12 @@ class LazyDict(Mapping):
 available_models = LazyDict({
     # models: vacuum
     "model_vac_gs": (_download_3HF_models, "ModelVacGS"),
+    "model_vac_es": (_download_3HF_models, "ModelVacES"),
     # models: environment
+    "model_env_gs": (_download_3HF_models, "ModelEnvGS"),
+    "model_env_es": (_download_3HF_models, "ModelEnvES"),
+    # You can also add your model via simple key value:
+    # "my_model": MyModel,
 })
 
 
