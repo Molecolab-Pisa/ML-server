@@ -10,5 +10,4 @@ dev_notebooks/
 TODO.md
 .tox/
 .jupyter_ystore.db
-sander_orca/avail_models/README.md
 tox.ini
