@@ -20,12 +20,52 @@
 # ============================================================
 # Expose the available models
 # ============================================================
+from collections.abc import Mapping
+import importlib
+import tarfile
+import os
 
-available_models = {
+def _download_3HF_models(model_name):
+    try:
+        module = importlib.import_module(".models_3HF", package=__name__)
+        cls = getattr(module, model_name)
+    except ImportError as e:
+        import urllib.request
+        print("Downloading the models implementation in ml_server/models/models_3HF.py...")
+        urllib.request.urlretrieve("https://zenodo.org/records/12818488/files/models_3HF.py?download=1", "models_3HF.py")
+        module = importlib.import_module(".models_3HF", package=__name__)
+        cls = getattr(module, model_name)
+        print("Downloading the models' data in ml_server/models/avail_models/")
+        urllib.request.urlretrieve("https://zenodo.org/records/12818488/files/avail_models.tar.gz?download=1", "avail_models.tar.gz")
+        print("Decompressing...")
+        tar = tarfile.open("avail_models.tar.gz")
+        tar.extractall()
+        tar.close()
+        os.remove("avail_models.tar.gz")
+    return cls
+
+
+class LazyDict(Mapping):
+    "https://stackoverflow.com/questions/16669367/setup-dictionary-lazily"
+    def __init__(self, *args, **kw):
+        self._raw_dict = dict(*args, **kw)
+
+    def __getitem__(self, key):
+        func, arg = self._raw_dict.__getitem__(key)
+        return func(arg)
+
+    def __iter__(self):
+        return iter(self._raw_dict)
+
+    def __len__(self):
+        return len(self._raw_dict)
+
+
+available_models = LazyDict({
     # models: vacuum
-#    "model_vac_gs": ModelVacGS
+    "model_vac_gs": (_download_3HF_models, "ModelVacGS"),
     # models: environment
-}
+})
 
 
 def list_available_models():

@@ -11,3 +11,5 @@ TODO.md
 .tox/
 .jupyter_ystore.db
 tox.ini
+ml_server/models/avail_models/
+ml_server/models/models_3HF.py
