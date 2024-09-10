@@ -32,11 +32,11 @@ def _download_3HF_models(model_name):
     except ImportError as e:
         import urllib.request
         print("Downloading the models implementation in ml_server/models/models_3HF.py...")
-        urllib.request.urlretrieve("https://zenodo.org/records/12819135/files/models_3HF.py?download=1", "models_3HF.py")
+        urllib.request.urlretrieve("https://zenodo.org/records/13739507/files/models_3HF.py?download=1", "models_3HF.py")
         module = importlib.import_module(".models_3HF", package=__name__)
         cls = getattr(module, model_name)
         print("Downloading the models' data in ml_server/models/avail_models/")
-        urllib.request.urlretrieve("https://zenodo.org/records/12819135/files/avail_models.tar.gz?download=1", "avail_models.tar.gz")
+        urllib.request.urlretrieve("https://zenodo.org/records/13739507/files/avail_models.tar.gz?download=1", "avail_models.tar.gz")
         print("Decompressing...")
         tar = tarfile.open("avail_models.tar.gz")
         tar.extractall()
