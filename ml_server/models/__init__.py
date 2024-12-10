@@ -64,6 +64,7 @@ class LazyDict(Mapping):
     def __len__(self):
         return len(self._raw_dict)
 
+from .models_adp import ModelVacGSADP, ModelEnvGSADP
 
 available_models = LazyDict({
     # models: vacuum
@@ -74,6 +75,8 @@ available_models = LazyDict({
     "model_env_es": (_download_3HF_models, "ModelEnvES"),
     # You can also add your model via simple key value:
     # "my_model": MyModel,
+    "model_vac_gs_adp": ModelVacGSADP,
+    "model_env_gs_adp": ModelEnvGSADP,
 })
 
 

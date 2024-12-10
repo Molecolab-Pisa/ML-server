@@ -133,6 +133,7 @@ def server():
     import struct
 
     import numpy as np
+    import jax.numpy as jnp
 
     from .models import available_models
 
@@ -217,12 +218,19 @@ def server():
 
                             if nmm > 0:
 
+                                logprint(str(nmm))
                                 sh_mm = (nmm, 4)
                                 mmcoordchg = np.zeros(sh_mm, dtype)
                                 mmcoordchg = recvall(conn, mmcoordchg)
 
-                                coords_mm = mmcoordchg[:, :3]
-                                charges_mm = mmcoordchg[:, 3]
+                                if nmm > model._max_mm_atoms:
+                                    model._max_mm_atoms = nmm
+                                coords_mm = jnp.zeros((model._max_mm_atoms, 3),dtype)
+                                charges_mm = jnp.zeros((model._max_mm_atoms,),dtype)
+                                coords_mm = coords_mm.at[:nmm].set(mmcoordchg[:, :3])
+                                charges_mm = charges_mm.at[:nmm].set(mmcoordchg[:, 3])
+                                #coords_mm = mmcoordchg[:, :3]
+                                #charges_mm = mmcoordchg[:, 3]
 
                                 # run the prediction
                                 energy, grad_qm, grad_mm = model.run(
@@ -231,7 +239,9 @@ def server():
                                     charges_mm,
                                     filebased=False,
                                 )
-                                conn.sendall(grad_mm)
+                                grad_mm_send = grad_mm[:nmm]
+                                conn.sendall(grad_mm_send)
+#                                conn.sendall(grad_mm)
                             else:
                                 energy, grad_qm = model.run(coords_qm, filebased=False)
 
