@@ -30,7 +30,7 @@ from gpx.bijectors import Softplus
 from gpx.kernels import Polynomial, Matern52, Prod
 from gpx.mean_functions import zero_mean
 from gpx.models import GPR
-from gpx.models.targetderivs import TargetsDerivs
+from gpx.models.targetsderivs_2 import TargetsDerivs
 from gpx.parameters import ModelState, Parameter
 from gpx.priors import NormalPrior
 from jax import Array, jit
@@ -50,6 +50,8 @@ Bohr2Ang = 0.529177210903
 Nm2Bohr = 18.897261258369284
 H2kjmol = 2625.499638755248
 Nm2Ang = 10.0
+conversion_charge = 1./H2kcal/Bohr2Ang
+conversion_dipole = conversion_charge/Bohr2Ang
 
 class ModelVacGSADP(BaseModelVac):
     """Model for the QM part only (vacuum), ground state, alanine dipeptide.
@@ -81,7 +83,8 @@ class ModelVacGSADP(BaseModelVac):
         )
 
 #        model.load(os.path.join(AVAIL_MODELS_DIR, "modelvacgs.npz"))
-        model.load("/home/p.mazzeo/IR/alanine_dipeptide/vac/model_vac_1e-4_jaccoef.npz")
+        model.load("/home/p.mazzeo/IR/alanine_dipeptide_wB/vac/new_training/model_vac.npz")
+#        model.load("/home/p.mazzeo/IR/alanine_dipeptide_wB/vac/model_vac.npz")
         model.print()
         self._model = model
         self.constant = model.state.constant
@@ -92,6 +95,8 @@ class ModelVacGSADP(BaseModelVac):
         coords_qm: Array,
         ind: Optional[Array] = None,
         ind_jac: Optional[Array] = None,
+        dipole: Optional[bool] = False,
+        model_env: Optional[ModelState] = None,
         **kwargs,
     ) -> Tuple[float, Array]:
         """predicts the QM energy and QM gradients
@@ -120,8 +125,43 @@ class ModelVacGSADP(BaseModelVac):
 #        grads = self._model.predict_derivs(ind, ind_jac).reshape(-1,3)
 #        energy = self._model.predict_y_derivs(ind)
         energy, grads = predict_vac(self._model, ind, ind_jac)
-        energy = energy.squeeze() / Bohr2Ang + self.constant
+        energy = ( energy.squeeze() + self.constant ) / H2kcal
+        grads = grads / H2kcal * Bohr2Ang
+        if dipole:
+            na, _ = coords_qm.shape
+            pot = jnp.zeros((1,na))
+            x = jnp.concatenate((ind, pot), axis=1)
+            dipole_vac = predict_dipole(model_env._model, x, jnp.expand_dims(coords_qm, axis=0))
+            dipole_vac = dipole_vac.squeeze() * conversion_dipole
+            with open(os.path.join(self.workdir,'dipole.dat'),'a') as f:
+                f.write('%14.10f   %14.10f   %14.10f\n' %(dipole_vac[0],dipole_vac[1],dipole_vac[2]))
         return energy, grads
+
+    def _sire_callback(
+        self,
+        numbers_qm: List[int],
+        charges_mm: List[float],
+        xyz_qm: List[List[float]],
+        xyz_mm: List[List[float]],
+        idx_mm: Optional[List[int]] = None,
+        dipole: Optional[bool] = False,
+        model_env: Optional[ModelState] = None
+    ) -> Tuple[float, List[List[float]], List[List[float]]]:
+    
+        num_mm_atoms = len(charges_mm)
+        
+        numbers_qm = np.array(numbers_qm)
+        charges_mm = np.array(charges_mm)
+        xyz_qm = np.array(xyz_qm)
+        xyz_mm = np.array(xyz_mm)
+    
+        charge = 0
+        
+        outputs = self.predict(xyz_qm, dipole=dipole, model_env=model_env)
+        return ( outputs[0].item() * H2kjmol , 
+                (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
+                (- jnp.zeros((num_mm_atoms,3)) * H2kjmol * Nm2Bohr).tolist(),
+               )
 
 
 class ModelEnvGSADP(BaseModelEnv):
@@ -185,7 +225,7 @@ class ModelEnvGSADP(BaseModelEnv):
             mean_function=zero_mean,
         )
 
-        model.load("/home/p.mazzeo/IR/alanine_dipeptide/env/model_env_1e-2_30_jaccoef.npz")
+        model.load("/home/p.mazzeo/IR/alanine_dipeptide/dyn_new/dyn_sire/single_points/new_training/model_env_1e-2_30_jaccoef.npz")
         model.print()
         self._model = model
         return self
@@ -312,6 +352,312 @@ class ModelEnvGSADP(BaseModelEnv):
                 (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
                 (- outputs[2][:num_mm_atoms] * H2kjmol * Nm2Bohr).tolist(),
                )
+
+class ModelEnvGSADPTotChg(BaseModelEnv):
+    """Environment model, ground state, alanine-dipeptide 
+
+    Predicts the energy of the QM part plus the QM/MM interaction, and the
+    gradients of that energy w.r.t. the QM and MM atoms.
+    The prediction is done with Gaussian process regression using a product kernel,
+    where a polynomial kernel operates on the electrostatic potential of the MM part
+    acting on the QM atoms, and a Matern(5/2) kernel operates on the inverse
+    distances of the QM atoms.
+    """
+
+    def __init__(self, workdir: str, model_vac: BaseModelVac) -> None:
+        super().__init__(workdir, model_vac=model_vac)
+        self._max_mm_atoms = 0
+
+    def load(self) -> ModelEnvGS:
+        sigma_targets = Parameter(
+            1e-3,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(),
+        )
+
+        sigma_derivs1 = Parameter(
+            1e-3,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(),
+        )
+
+        sigma_derivs2 = Parameter(
+            1e-3,
+            trainable=True,
+            bijector=Softplus(),
+            prior=NormalPrior(),
+        )
+
+        k2_lengthscale = dict(
+            lengthscale=Parameter(
+                5.0,
+                trainable=True,
+                bijector=Softplus(),
+                prior=NormalPrior(),
+            )
+        )
+
+        ind_dim = 231
+        n_feat = 231 + 22
+        ind_active_dims = jnp.arange(0, ind_dim)
+        pot_active_dims = jnp.arange(ind_dim, n_feat)
+
+        k1 = Polynomial(no_intercept=True, active_dims=pot_active_dims, nperms=27)
+        k2 = Matern52(active_dims=ind_active_dims, nperms=27)
+
+        kernel_params = {"kernel1": k1.default_params(), "kernel2": k2_lengthscale}
+
+
+        k = Prod(k1, k2, nperms=27)
+
+        model = TargetsDerivs(
+            kernel=k,
+            kernel_params=kernel_params,
+            sigma_targets=sigma_targets,
+            sigma_derivs1=sigma_derivs1,
+            sigma_derivs2=sigma_derivs2,
+            mean_function=zero_mean,
+        )
+
+#        model.load("/home/p.mazzeo/IR/alanine_dipeptide_wB/env/new_training/model_env.npz")
+        model.load("/home/p.mazzeo/IR/alanine_dipeptide_wB/env/model_env.npz")
+        model.print()
+        self._model = model
+        return self
+
+    def get_input(
+        self, ind_descr: Array, ind_jac: Array, pot_descr: Array, pot_jac_qm: Array, pot_jac_mm: Array
+    ) -> Tuple[Array, Array]:
+        """concatenates the inverse distances and the electrostatic potential
+        descriptors/jacobians.
+        """
+        n, f, _ = ind_jac.shape
+        _, _, v = pot_jac_mm.shape
+        descr = jnp.concatenate((ind_descr, pot_descr), axis=-1)
+        jacobian_qm = jnp.concatenate((ind_jac, pot_jac_qm), axis=1)
+        return descr, jacobian_qm, pot_jac_mm 
+
+    def predict(
+            self, coords_qm: Array, coords_mm: Array, charges_mm: Array, dipole: bool = False
+    ) -> Tuple[float, Array, Array]:
+        """predicts the QM + QM/MM energy and QM and MM gradients
+
+        Predicts the energy of the QM part plus the QM/MM interaction, and
+        the gradients of that energy w.r.t. the QM and MM atoms.
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        coords_mm: array, shape (num_MM_atoms, 3)
+            coordinates of the MM part.
+        charges_mm: array, shape (num_MM_atoms,)
+            charges of the MM part.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads_qm: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        grads_mm: array, shape (num_MM_atoms, 3)
+            gradients of the energy w.r.t. the MM atoms, [hartree/bohr].
+        """
+        # descriptor for the QM part
+        ind = inv_dist(coords_qm)
+        ind_jac = inv_dist_jac(coords_qm)
+
+        # descriptor for the environment
+        pot = elec_pot(coords_qm, coords_mm, charges_mm)
+        pot_jac_qm, pot_jac_mm = elec_pot_jac(coords_qm, coords_mm, charges_mm)
+
+        # concatenate descriptors
+        descr, jacobian_qm, jacobian_mm = self.get_input(ind, ind_jac, pot, pot_jac_qm, pot_jac_mm)
+
+        # predict energy and grads in vacuum
+        # note: we send ind and ind_jac to avoid recomputing the descriptor
+        energy_vac, grads_vac = self.model_vac.predict(
+            coords_qm, ind=ind, ind_jac=ind_jac
+        )
+
+        # predict QM/MM interaction energy and grads
+        if dipole:
+            energy_env, grads_env_qm, grads_env_mm, dipole_env = predict_env_poly_chg_dip(
+                self._model, descr, jacobian_qm, jacobian_mm, dipole, jnp.expand_dims(coords_qm, axis=0)
+            )
+            dipole_env = dipole_env.squeeze() * conversion_dipole
+            with open(os.path.join(self.workdir,'dipole.dat'),'a') as f:
+                f.write('%14.10f   %14.10f   %14.10f\n' %(dipole_env[0],dipole_env[1],dipole_env[2]))
+        else:
+            energy_env, grads_env_qm, grads_env_mm = predict_env_poly_chg_dip(
+                self._model, descr, jacobian_qm, jacobian_mm
+            )
+
+        energy_env = energy_env.squeeze() / H2kcal
+        grads_env_qm = grads_env_qm / H2kcal * Bohr2Ang
+        grads_env_mm = grads_env_mm / H2kcal * Bohr2Ang
+
+        # combine QM vacuum and QM/MM contributions
+        energy = energy_vac + energy_env
+        grads_qm = grads_vac + grads_env_qm
+        grads_mm = grads_env_mm
+
+        return energy, grads_qm, grads_mm
+
+    def _sire_callback(
+        self,
+        numbers_qm: List[int],
+        charges_mm: List[float],
+        xyz_qm: List[List[float]],
+        xyz_mm: List[List[float]],
+        idx_mm: Optional[List[int]] = None,
+        dipole: Optional[bool] = False
+    ) -> Tuple[float, List[List[float]], List[List[float]]]:
+    
+        num_mm_atoms = len(charges_mm)
+        if num_mm_atoms > self._max_mm_atoms:
+            self._max_mm_atoms = num_mm_atoms
+    
+        # Pad the MM coordinates and charges arrays to avoid re-jitting.
+        if self._max_mm_atoms > num_mm_atoms:
+            num_pad = self._max_mm_atoms - num_mm_atoms
+            xyz_mm_pad = num_pad * [[0.0, 0.0, 0.0]]
+            charges_mm_pad = num_pad * [0.0]
+            xyz_mm = np.append(xyz_mm, xyz_mm_pad, axis=0)
+            charges_mm = np.append(charges_mm, charges_mm_pad)
+    
+        
+        numbers_qm = np.array(numbers_qm)
+        charges_mm = np.array(charges_mm)
+        xyz_qm = np.array(xyz_qm)
+        xyz_mm = np.array(xyz_mm)
+    
+        charge = 0
+        
+        outputs = self.predict(xyz_qm, xyz_mm, charges_mm, dipole=dipole)
+        return ( outputs[0].item() * H2kjmol , 
+                (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
+                (- outputs[2][:num_mm_atoms] * H2kjmol * Nm2Bohr).tolist(),
+               )
+
+class ModelVacGSADPDelta(BaseModelVac):
+    """Model for the QM part only (vacuum), ground state, N-methylacetamide.
+
+    Predicts the QM energies and QM gradients with Gaussian process regression
+    using a Matern(5/2) kernel on the inverse distances descriptor.
+    """
+
+    def __init__(self, workdir: str, basemodel: ModelVacGS) -> None:
+        super().__init__(workdir)
+        self._basemodel = basemodel
+
+    def load(self) -> ModelVacGS:
+        lengthscale = Parameter(
+            1.0, trainable=False, bijector=Softplus(), prior=NormalPrior()
+        )
+
+        sigma = Parameter(
+            0.1, trainable=False, bijector=Softplus(), prior=NormalPrior()
+        )
+
+        kernel_params = dict(lengthscale=lengthscale)
+
+        model = GPR(
+            kernel=Matern52(nperms=27),
+            kernel_params=kernel_params,
+            mean_function=zero_mean,
+            sigma=sigma,
+        )
+
+        model.load("/home/p.mazzeo/IR/alanine_dipeptide_wB/double-hybrid/train_vac/model_vac.npz")
+        model.print()
+        self._model = model
+        self.constant = model.state.constant
+        return self
+
+    def predict(
+        self,
+        coords_qm: Array,
+        ind: Optional[Array] = None,
+        ind_jac: Optional[Array] = None,
+        dipole: Optional[bool] = False,
+        model_env: Optional[ModelState] = None,
+        **kwargs,
+    ) -> Tuple[float, Array]:
+        """predicts the QM energy and QM gradients
+
+        Arguments
+        ---------
+        coords_qm: array, shape (num_QM_atoms, 3)
+            coordinates of the QM part.
+        ind: array, shape (num_ID, 3)
+            inverse distances descriptor
+            num_ID = num_QM_atoms * (num_QM_atoms - 1) / 2
+        ind_jac: array, shape (num_ID, 3 * num_QM_atoms)
+            jacobian of the inverse distances descriptor.
+
+        Returns
+        -------
+        energy: float
+            energy of the QM part, [hartree].
+        grads: array, shape (num_QM_atoms, 3)
+            gradients of the energy w.r.t. the QM atoms, [hartree/bohr].
+        """
+        if ind is None:
+            ind = inv_dist(coords_qm)
+        if ind_jac is None:
+            ind_jac = inv_dist_jac(coords_qm)
+        energy, grads = self._basemodel.predict(coords_qm, ind, ind_jac)
+        delta_energy, delta_grads = predict_vac(self._model, ind, ind_jac)
+        delta_energy = ( delta_energy.squeeze() + self.constant ) / H2kcal
+        delta_grads = delta_grads / H2kcal * Bohr2Ang
+
+        if dipole:
+            na, _ = coords_qm.shape
+            pot = jnp.zeros((1,na))
+            x = jnp.concatenate((ind, pot), axis=1)
+            if hasattr(model_env, "_basemodel"):
+                dipole_vac = predict_dipole(model_env._basemodel._model, x, jnp.expand_dims(coords_qm, axis=0))
+                delta_dipole_vac = predict_dipole(model_env._model, x, jnp.expand_dims(coords_qm, axis=0))
+                dipole_vac = (dipole_vac + delta_dipole_vac).squeeze() * conversion_dipole
+            else:
+                dipole_vac = predict_dipole(model_env._model, x, jnp.expand_dims(coords_qm, axis=0))
+                dipole_vac = dipole_vac.squeeze() * conversion_dipole
+            with open(os.path.join(self.workdir,'dipole.dat'),'a') as f:
+                f.write('%14.10f   %14.10f   %14.10f\n' %(dipole_vac[0],dipole_vac[1],dipole_vac[2]))
+
+        energy = energy + delta_energy
+        grads = grads + delta_grads
+        return energy, grads
+
+    def _sire_callback(
+        self,
+        numbers_qm: List[int],
+        charges_mm: List[float],
+        xyz_qm: List[List[float]],
+        xyz_mm: List[List[float]],
+        idx_mm: Optional[List[int]] = None,
+        dipole: Optional[bool] = False,
+        model_env: Optional[ModelState] = None
+    ) -> Tuple[float, List[List[float]], List[List[float]]]:
+    
+        num_mm_atoms = len(charges_mm)
+        
+        numbers_qm = np.array(numbers_qm)
+        charges_mm = np.array(charges_mm)
+        xyz_qm = np.array(xyz_qm)
+        xyz_mm = np.array(xyz_mm)
+    
+        charge = 0
+        
+        outputs = self.predict(xyz_qm, dipole=dipole, model_env=model_env)
+        return ( outputs[0].item() * H2kjmol , 
+                (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
+                (- np.zeros((num_mm_atoms,3)) * H2kjmol * Nm2Bohr).tolist(),
+               )
+
 # ============================================================
 # Auxiliary functions
 # ============================================================
@@ -367,108 +713,6 @@ def predict_vac(model: ModelState, x: ArrayLike, jacobian: ArrayLike):
         jacobian=jacobian,
         mu=model.state.mu,
     )
-
-
-def _predict_env(
-    x1: ArrayLike,
-    x2: ArrayLike,
-    params: Dict[str, Parameter],
-    jaccoef: ArrayLike,
-    jacobian_qm: ArrayLike,
-    jacobian_mm: ArrayLike,
-    c_energies: ArrayLike,
-    mu: ArrayLike,
-    active_dims_m: ArrayLike,
-    active_dims_l: ArrayLike,
-) -> Array:
-    ns1, nf1 = x1.shape
-    ns2, nf2 = x2.shape
-
-    z1_l = x1[:, active_dims_l]
-    z2_l = x2[:, active_dims_l]
-    jaccoef_l = jaccoef[:, active_dims_l]
-    jacobian_qm_l = jacobian_qm[:, active_dims_l]
-
-    lin = z1_l @ z2_l.T
-    d0k_jc_l = jnp.einsum("sf,tf->st", jaccoef_l, z2_l)
-    d1k_jtqm_l = jnp.einsum("sf,tfv->stv", z1_l, jacobian_qm_l)
-    d1k_l = z1_l
-    d01k_jc_jtqm_l = jnp.einsum("sf,tfv->stv", jaccoef_l, jacobian_qm_l)
-    d01k_jc_l = jaccoef_l
-
-    lengthscale = params["kernel2"]["lengthscale"].value
-
-    nact_m = active_dims_m.shape[0]
-    z1_m = x1[:, active_dims_m] / lengthscale
-    z2_m = x2[:, active_dims_m] / lengthscale
-    jaccoef_m = jaccoef[:, active_dims_m]
-    jacobian_qm_m = jacobian_qm[:, active_dims_m]
-    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
-    d2_m = squared_distances(z1_m, z2_m)
-    d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
-    expd_m = jnp.exp(-d_m)
-
-    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d_m) * expd_m
-    d01const = (5.0 / (3.0 * lengthscale**2)) * expd_m
-
-    mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
-
-    diff_jc = jnp.einsum("stf,sf->st", diff_m, jaccoef_m)
-    diff_jtqm = jnp.einsum("stf,tfv->stv", diff_m, jacobian_qm_m)
-
-    d0k_jc_m = -const * diff_jc
-    d1k_jtqm_m = -jnp.einsum("st,stv->stv", -const, diff_jtqm)
-
-    d01k_jc_jtqm_m = jnp.einsum("st,st,stv->stv", -d01const, diff_jc, diff_jtqm)
-    diagonal = d01const * (1.0 + d_m)
-    diagonal = diagonal[:, :, jnp.newaxis].repeat(nact_m, axis=2)
-    d01k_jc_jtqm_m += jnp.einsum("sf,stf,tfv->stv", jaccoef_m, diagonal, jacobian_qm_m)
-
-    energy = mu + jnp.einsum("st,st,s->t", lin, mat52, c_energies)
-    energy += jnp.einsum("st,st->t", lin, d0k_jc_m)
-    energy += jnp.einsum("st,st->t", d0k_jc_l, mat52)
-
-    grads_qm = jnp.einsum("st,stv,s->tv", lin, d1k_jtqm_m, c_energies)
-    grads_qm += jnp.einsum("stv,st,s->tv", d1k_jtqm_l, mat52, c_energies)
-    grads_qm += jnp.einsum("stv,st->tv", d01k_jc_jtqm_l, mat52)
-    grads_qm += jnp.einsum("st,stv->tv", d0k_jc_l, d1k_jtqm_m)
-    grads_qm += jnp.einsum("st,stv->tv", d0k_jc_m, d1k_jtqm_l)
-    grads_qm += jnp.einsum("stv,st->tv", d01k_jc_jtqm_m, lin)
-
-    tmp = jnp.einsum("sf,st,s->tf", d1k_l, mat52, c_energies)
-    tmp += jnp.einsum("sf,st->tf", d01k_jc_l, mat52)
-    tmp += jnp.einsum("st,sf->tf", d0k_jc_m, d1k_l)
-
-    grads_mm = jnp.einsum("tf,tfv->tv", tmp, jacobian_mm)
-
-    return energy, grads_qm.reshape(-1, 3), grads_mm.reshape(-1, 3)
-
-
-@partial(jit, static_argnums=0)
-def predict_env(
-    model: ModelState,
-    x: ArrayLike,
-    jacobian_qm: ArrayLike,
-    jacobian_mm: ArrayLike,
-):
-    ind_dim = 378
-    n_feat = 378 + 28
-    ind_active_dims = jnp.arange(0, ind_dim)
-    pot_active_dims = jnp.arange(ind_dim, n_feat)
-    kernel_params = model.state.params["kernel_params"]
-    return _predict_env(
-        x1=model.state.x_train,
-        x2=x,
-        params=kernel_params,
-        jaccoef=model.state.jaccoef,
-        jacobian_qm=jacobian_qm,
-        jacobian_mm=jacobian_mm,
-        c_energies=model.state.c_targets,
-        mu=model.state.mu,
-        active_dims_m=ind_active_dims,
-        active_dims_l=pot_active_dims,
-    )
-
 
 def _predict_env_poly(
     x1: ArrayLike,
@@ -594,6 +838,255 @@ def predict_env_poly(
         active_dims_p=pot_active_dims,
     )
 
+def _predict_env_poly_chg_dip(
+    x1: ArrayLike,
+    x2: ArrayLike,
+    params: Dict[str, Parameter],
+    jaccoef1: ArrayLike,
+    jaccoef2: ArrayLike,
+    jacobian_qm: ArrayLike,
+    jacobian_mm: ArrayLike,
+    c_energies: ArrayLike,
+    mu: ArrayLike,
+    active_dims_m: ArrayLike,
+    active_dims_p: ArrayLike,
+    dipole: bool,
+    jacobian_chg: ArrayLike,
+) -> Array:
+
+    nperms = 27
+    nsp1, nf1 = x1.shape
+    ns1 = int(nsp1/nperms)
+    ns2, nf2 = x2.shape
+    nact_p = active_dims_p.shape[0]
+
+    z1_p = x1[:, active_dims_p]
+    z2_p = x2[:, active_dims_p]
+    jaccoef1_p = jaccoef1[:, active_dims_p]
+    jaccoef2_p = jaccoef2[:, active_dims_p]
+    jacobian_qm_p = jacobian_qm[:, active_dims_p]
+
+    offset = params["kernel1"]["offset"].value
+    degree = params["kernel1"]["degree"].value
+
+    poly = ((offset + z1_p @ z2_p.T) ** degree) - (offset**degree)
+    poly = poly.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
+    const1 = degree * (offset + z1_p @ z2_p.T) ** (degree - 1)
+    d0k_p = jnp.einsum("st,ft->sft", const1, z2_p.T)
+    d0k_jc1_p = jnp.einsum("sf,sft->st", jaccoef1_p, d0k_p)
+    d0k_jc1_p = d0k_jc1_p.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+    d0k_jc2_p = jnp.einsum("sf,sft->st", jaccoef2_p, d0k_p)
+    d0k_jc2_p = d0k_jc2_p.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+    d1k_p = jnp.einsum("st,se->ste", const1, z1_p)
+    d1k_p = d1k_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    d1k_jtqm_p = jnp.einsum("ste,tev->stv", d1k_p, jacobian_qm_p)
+    tmp1 = jnp.einsum(
+        "st,sfte->sfte",
+        const1,
+        jnp.tile(jnp.eye((nact_p)), (nsp1, ns2)).reshape(nsp1, nact_p, ns2, nact_p),
+    )
+    const2 = (degree * (degree - 1) * (offset + z1_p @ z2_p.T) ** (degree - 2))
+    tmp2 = jnp.einsum("sf,st,te->setf", z1_p, const2, z2_p)
+    d01k_jc1_p = jnp.einsum("sf,sfte->ste",jaccoef1_p, tmp1 + tmp2)
+    d01k_jc1_p = d01k_jc1_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    d01k_jc2_p = jnp.einsum("sf,sfte->ste",jaccoef2_p, tmp1 + tmp2)
+    d01k_jc2_p = d01k_jc2_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    d01k_jc1_jtqm_p = jnp.einsum("ste,tev->stv", d01k_jc1_p, jacobian_qm_p)
+    d01k_jc2_jtqm_p = jnp.einsum("ste,tev->stv", d01k_jc2_p, jacobian_qm_p)
+
+    lengthscale = params["kernel2"]["lengthscale"].value
+
+    nact_m = active_dims_m.shape[0]
+    z1_m = x1[:, active_dims_m] / lengthscale
+    z2_m = x2[:, active_dims_m] / lengthscale
+    jaccoef1_m = jaccoef1[:, active_dims_m]
+    jacobian_qm_m = jacobian_qm[:, active_dims_m]
+    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
+    d2_m = squared_distances(z1_m, z2_m)
+    d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
+    expd_m = jnp.exp(-d_m)
+
+    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d_m) * expd_m
+    d01const = (5.0 / (3.0 * lengthscale**2)) * expd_m
+
+    mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
+    mat52 = mat52.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
+
+    diff_jc1 = jnp.einsum("stf,sf->st", diff_m, jaccoef1_m)
+    diff_jtqm = jnp.einsum("stf,tfv->stv", diff_m, jacobian_qm_m)
+
+    d0k_jc1_m = -const * diff_jc1
+    d0k_jc1_m = d0k_jc1_m.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+    d1k_jtqm_m = -jnp.einsum("st,stv->stv", -const, diff_jtqm)
+    d1k_jtqm_m = d1k_jtqm_m.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms 
+
+    d01k_jc1_jtqm_m = jnp.einsum("st,st,stv->stv", -d01const, diff_jc1, diff_jtqm)
+    diagonal = d01const * (1.0 + d_m)
+    diagonal = diagonal[:, :, jnp.newaxis].repeat(nact_m, axis=2)
+    d01k_jc1_jtqm_m += jnp.einsum("sf,stf,tfv->stv", jaccoef1_m, diagonal, jacobian_qm_m)
+    d01k_jc1_jtqm_m = d01k_jc1_jtqm_m.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms 
+
+    energy = mu + jnp.einsum("st,st,s->t", poly, mat52, c_energies)
+    energy += jnp.einsum("st,st->t", poly, d0k_jc1_m)
+    energy += jnp.einsum("st,st->t", d0k_jc1_p, mat52)
+    energy += jnp.einsum("st,st->t", d0k_jc2_p, mat52)
+
+    grads_qm = jnp.einsum("st,stv,s->tv", poly, d1k_jtqm_m, c_energies)
+    grads_qm += jnp.einsum("stv,st,s->tv", d1k_jtqm_p, mat52, c_energies)
+    grads_qm += jnp.einsum("stv,st->tv", d01k_jc1_jtqm_p, mat52)
+    grads_qm += jnp.einsum("st,stv->tv", d0k_jc1_p, d1k_jtqm_m)
+    grads_qm += jnp.einsum("st,stv->tv", d0k_jc1_m, d1k_jtqm_p)
+    grads_qm += jnp.einsum("stv,st->tv", d01k_jc1_jtqm_m, poly)
+    grads_qm += jnp.einsum("st,stv->tv", d0k_jc2_p, d1k_jtqm_m)
+    grads_qm += jnp.einsum("stv,st->tv", d01k_jc2_jtqm_p, mat52)
+
+    tmp = jnp.einsum("stf,st,s->tf", d1k_p, mat52, c_energies)
+    tmp += jnp.einsum("stf,st->tf", d01k_jc1_p, mat52)
+    tmp += jnp.einsum("stf,st->tf", d01k_jc2_p, mat52)
+    tmp += jnp.einsum("st,stf->tf", d0k_jc1_m, d1k_p)
+
+    grads_mm = jnp.einsum("tf,tfv->tv", tmp, jacobian_mm)
+
+    if dipole:
+        d1k_jtchg_p = jnp.einsum("ste,tev->stv", d1k_p, jacobian_chg)
+        d01k_jc1_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc1_p, jacobian_chg)
+        d01k_jc2_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc2_p, jacobian_chg)
+
+        dipole = jnp.einsum('stv,st,s->tv', d1k_jtchg_p, mat52, c_energies)
+        dipole += jnp.einsum('stv,st->tv', d1k_jtchg_p, d0k_jc1_m)
+        dipole += jnp.einsum('stv,st->tv', d01k_jc1_jtchg_p, mat52)
+        dipole += jnp.einsum('stv,st->tv', d01k_jc2_jtchg_p, mat52)
+
+        return energy, grads_qm.reshape(-1, 3), grads_mm.reshape(-1, 3), dipole.reshape(-1, 3)
+        
+    else:
+        
+        return energy, grads_qm.reshape(-1, 3), grads_mm.reshape(-1, 3)
+
+
+def _predict_dipole(
+    x1: ArrayLike,
+    x2: ArrayLike,
+    params: Dict[str, Parameter],
+    jaccoef1: ArrayLike,
+    jaccoef2: ArrayLike,
+    c_energies: ArrayLike,
+    active_dims_m: ArrayLike,
+    active_dims_p: ArrayLike,
+    jacobian_chg: ArrayLike,
+) -> Array:
+    nperms = 27
+    nsp1, nf1 = x1.shape
+    ns1 = int(nsp1/nperms)
+    ns2, nf2 = x2.shape
+    nact_p = active_dims_p.shape[0]
+
+    z1_p = x1[:, active_dims_p]
+    z2_p = x2[:, active_dims_p]
+    jaccoef1_p = jaccoef1[:, active_dims_p]
+    jaccoef2_p = jaccoef2[:, active_dims_p]
+
+    offset = params["kernel1"]["offset"].value
+    degree = params["kernel1"]["degree"].value
+
+    const1 = degree * (offset + z1_p @ z2_p.T) ** (degree - 1)
+    d1k_p = jnp.einsum("st,se->ste", const1, z1_p)
+    d1k_p = d1k_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    tmp1 = jnp.einsum(
+        "st,sfte->sfte",
+        const1,
+        jnp.tile(jnp.eye((nact_p)), (nsp1, ns2)).reshape(nsp1, nact_p, ns2, nact_p),
+    )
+    const2 = (degree * (degree - 1) * (offset + z1_p @ z2_p.T) ** (degree - 2))
+    tmp2 = jnp.einsum("sf,st,te->setf", z1_p, const2, z2_p)
+    d01k_jc1_p = jnp.einsum("sf,sfte->ste",jaccoef1_p, tmp1 + tmp2)
+    d01k_jc1_p = d01k_jc1_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    d01k_jc2_p = jnp.einsum("sf,sfte->ste",jaccoef2_p, tmp1 + tmp2)
+    d01k_jc2_p = d01k_jc2_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+
+    d1k_jtchg_p = jnp.einsum("ste,tev->stv", d1k_p, jacobian_chg)
+    d01k_jc1_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc1_p, jacobian_chg)
+    d01k_jc2_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc2_p, jacobian_chg)
+
+    lengthscale = params["kernel2"]["lengthscale"].value
+
+    nact_m = active_dims_m.shape[0]
+    z1_m = x1[:, active_dims_m] / lengthscale
+    z2_m = x2[:, active_dims_m] / lengthscale
+    jaccoef1_m = jaccoef1[:, active_dims_m]
+    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
+    d2_m = squared_distances(z1_m, z2_m)
+    d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
+    expd_m = jnp.exp(-d_m)
+
+    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d_m) * expd_m
+
+    mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
+    mat52 = mat52.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
+    diff_jc1 = jnp.einsum("stf,sf->st", diff_m, jaccoef1_m)
+    d0k_jc1_m = -const * diff_jc1
+    d0k_jc1_m = d0k_jc1_m.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+    
+    dipole = jnp.einsum('stv,st,s->tv', d1k_jtchg_p, mat52, c_energies)
+    dipole += jnp.einsum('stv,st->tv', d1k_jtchg_p, d0k_jc1_m)
+    dipole += jnp.einsum('stv,st->tv', d01k_jc1_jtchg_p, mat52)
+    dipole += jnp.einsum('stv,st->tv', d01k_jc2_jtchg_p, mat52)
+    
+    return dipole.reshape(-1, 3)
+
+@partial(jit, static_argnums=0)
+def predict_dipole(
+    model: ModelState,
+    x: ArrayLike,
+    jacobian_chg: ArrayLike = None,
+):
+    ind_dim = 231
+    n_feat = 231 + 22
+    ind_active_dims = jnp.arange(0, ind_dim)
+    pot_active_dims = jnp.arange(ind_dim, n_feat)
+    kernel_params = model.state.params["kernel_params"]
+    return _predict_dipole(
+        x1=model.state.x_train,
+        x2=x,
+        params=kernel_params,
+        jaccoef1=model.state.jaccoef1,
+        jaccoef2=model.state.jaccoef2,
+        c_energies=model.state.c_targets,
+        active_dims_m=ind_active_dims,
+        active_dims_p=pot_active_dims,
+        jacobian_chg=jacobian_chg,
+    )
+
+
+@partial(jit, static_argnums=(0,4))
+def predict_env_poly_chg_dip(
+    model: ModelState,
+    x: ArrayLike,
+    jacobian_qm: ArrayLike,
+    jacobian_mm: ArrayLike,
+    dipole: bool = False,
+    jacobian_chg: ArrayLike = None,
+):
+    ind_dim = 231
+    n_feat = 231 + 22
+    ind_active_dims = jnp.arange(0, ind_dim)
+    pot_active_dims = jnp.arange(ind_dim, n_feat)
+    kernel_params = model.state.params["kernel_params"]
+    return _predict_env_poly_chg_dip(
+        x1=model.state.x_train,
+        x2=x,
+        params=kernel_params,
+        jaccoef1=model.state.jaccoef1,
+        jaccoef2=model.state.jaccoef2,
+        jacobian_qm=jacobian_qm,
+        jacobian_mm=jacobian_mm,
+        c_energies=model.state.c_targets,
+        mu=model.state.mu,
+        active_dims_m=ind_active_dims,
+        active_dims_p=pot_active_dims,
+        dipole=dipole,
+        jacobian_chg=jacobian_chg,
+    )
 
 class EnergiesGrads:
     def __init__(
@@ -764,33 +1257,20 @@ def inv_dist_jac(coords_qm: ArrayLike) -> Array:
     Returns:
         jacobian: shape (1, n_atoms_qm (n_atoms_qm - 1)/2, n_atoms_qm*3)
     """
+    n_atoms = coords_qm.shape[0]
+    idx_i, idx_j = jnp.triu_indices(n_atoms, k=1) 
 
-    n_qm, _ = coords_qm.shape
-    n_feat = int(n_qm * (n_qm - 1) / 2)
-    jac_invdist = jnp.zeros((n_feat, n_qm, 3))
+    diffs = coords_qm[idx_i] - coords_qm[idx_j]       
+    dists = jnp.linalg.norm(diffs, axis=1, keepdims=True) 
 
-    def row_scan(i, jac_invdist):
-        def inner_func(j, jac_invdist):
-            diff = coords_qm[i] - coords_qm[j]
-            d = jnp.sqrt(jnp.sum((coords_qm[i] - coords_qm[j]) ** 2))
-            k = (n_qm * (n_qm - 1) / 2) - (n_qm - i) * ((n_qm - i) - 1) / 2 + j - i - 1
+    derivs_i = -diffs / dists**3  
+    derivs_j = -derivs_i          
 
-            def select(atom, jac_invdist):
-                return jac_invdist.at[k.astype(int), atom].set(
-                    jnp.where(
-                        atom == i,
-                        -diff / d**3,
-                        jnp.where(atom == j, diff / d**3, 0.0),
-                    )
-                )
+    jac = jnp.zeros((idx_i.shape[0], n_atoms, 3))
+    jac = jac.at[jnp.arange(idx_i.shape[0]), idx_i].set(derivs_i)
+    jac = jac.at[jnp.arange(idx_i.shape[0]), idx_j].set(derivs_j)
 
-            return jax.lax.fori_loop(0, n_qm, select, jac_invdist)
-
-        return jax.lax.fori_loop(i + 1, n_qm, inner_func, jac_invdist)
-
-    jac_invdist = jax.lax.fori_loop(0, n_qm - 1, row_scan, jac_invdist)
-
-    return jnp.expand_dims(jac_invdist.reshape(n_feat, n_qm * 3), axis=0)
+    return jnp.expand_dims(jac.reshape(jac.shape[0], -1), axis=0)
 
 
 @jit
@@ -837,27 +1317,21 @@ def elec_pot_jac(
 
     diff = coords_qm[:, jnp.newaxis, :] - coords_mm
 
-    d = jnp.sqrt(jnp.sum((coords_qm[:, jnp.newaxis, :] - coords_mm) ** 2, axis=-1))
+    d2 = jnp.sum(diff ** 2, axis=-1)
+    d3 = d2 * jnp.sqrt(d2)
 
     jac_pot_mm = (
-        charges_mm[jnp.newaxis, :, jnp.newaxis] * diff / d[:, :, jnp.newaxis] ** 3
+        charges_mm[jnp.newaxis, :, jnp.newaxis] * diff / d3[:, :, jnp.newaxis] 
     )
 
-    def row_scan(i, jac_pot_qm):
-        deriv = -jnp.sum(
-            (charges_mm[:, jnp.newaxis] * diff[i] / d[i, :, jnp.newaxis] ** 3), axis=0
-        )
+    deriv = -jnp.sum(charges_mm[jnp.newaxis, :, jnp.newaxis] * diff / d3[:, :, jnp.newaxis], axis=1)
 
-        def select(atom, jac_pot_qm):
-            return jac_pot_qm.at[i, atom].set(jnp.where(atom == i, deriv, 0.0))
+    mask = jnp.eye(n_qm)[:, :, jnp.newaxis]
+    jac_pot_qm = mask * deriv[:, jnp.newaxis, :]
 
-        return jax.lax.fori_loop(0, n_qm, select, jac_pot_qm)
-
-    jac_pot_qm = jax.lax.fori_loop(0, n_qm, row_scan, jac_pot_qm)
-
-    return jnp.expand_dims(jac_pot_qm.reshape(n_qm, n_qm * 3), axis=0), jnp.expand_dims(
-        jac_pot_mm.reshape(n_qm, n_mm * 3), axis=0
-    )
+    jac_pot_qm = jnp.expand_dims(jac_pot_qm.reshape(n_qm, n_qm * 3), axis=0)
+    jac_pot_mm = jnp.expand_dims(jac_pot_mm.reshape(n_qm, n_mm * 3), axis=0)
+    return jac_pot_qm, jac_pot_mm
 
 
 def compute_potential(charges_mm: ArrayLike, dd: ArrayLike) -> Array:

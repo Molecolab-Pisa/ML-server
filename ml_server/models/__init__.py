@@ -64,7 +64,8 @@ class LazyDict(Mapping):
     def __len__(self):
         return len(self._raw_dict)
 
-from .models_adp import ModelVacGSADP, ModelEnvGSADP
+from .models_adp import ModelVacGSADP, ModelEnvGSADP, ModelEnvGSADPTotChg
+from .models_nma import ModelVacGSNMA, ModelEnvGSNMA
 
 available_models = LazyDict({
     # models: vacuum
@@ -77,6 +78,9 @@ available_models = LazyDict({
     # "my_model": MyModel,
     "model_vac_gs_adp": ModelVacGSADP,
     "model_env_gs_adp": ModelEnvGSADP,
+
+    "model_vac_gs_nma": ModelVacGSNMA,
+    "model_env_gs_nma": ModelEnvGSNMA,
 })
 
 
