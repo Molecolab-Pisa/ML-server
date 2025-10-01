@@ -1,22 +1,29 @@
 # ML-server
-ML-server is a Python script that allows sending energies and gradients to Sander (Amber) to perform QM/MM simulations. 
+*ML-server* is a Python script that enables sending energies and gradients to a molecular dynamics (MD) engine to perform *ML/MM simulations*. 
 
-As an example of models implemented in Python, we have the GPX models of 3-hydroxyflavone published in __INSERT_PUBLICATION__.
+The supported MD engines are `sander` (Amber) and `sire` (OpenMM).
 
-We provide two kinds of communication between Python and Sander:
-*   `filebased`, where we exploit the file-based interface between Sander and Orca. Pro: the installation is easier because you don't have to recompile Amber. Con: the communication is slow because it's limited by reading/writing on disk.
+Several examples of models implemented in Python are included, such as the GPX models of 3-hydroxyflavone (published in https://doi.org/10.1039/D4DD00295D), uracil, N-methylacetamide, and alanine dipeptide.
+
+The interface with `sire` only requires providing a `callback` function, and simulations can be run on both CPU and GPU.
+
+The interface with `sander` can be:
+*   `filebased`, which uses the file-based interface between Sander and Orca. Pro: the installation is easier because you don't need to recompile Amber. Con: the communication is slow because it's limited by reading/writing on disk.
 *   `direct`, where the data is directly exchanged via python-fortran socket. Pro: faster communication. Con: more involved installation, because you have to add some files to the Amber source code and recompile it. 
+In this case, simulations can be run only on CPU.
 
 ## Installation
 
-### Quick installation (`filebased` only)
-In order to use the file-based interface you can simply install the python package with e.g.
+### Quick installation
+In order to use the interface with `sire` or the file-based interface with `sander`, you can simply install the python package with e.g.
 ```shell
 git clone https://github.com/Molecolab-Pisa/ML-server
 cd ML-server
 pip install .
 ```
-### Complete installation (`direct` and  `filebased`)
+Instructions for installing `sire` can be found at https://sire.openbiosim.org/install.html. 
+
+### Complete installation (`direct` interface with `sander`)
 To use the faster `direct` interface you need access to the AmberTools source code files. 
 1.   Copy the files in `ML-server/fortran` inside the Sander folder (`$AMBERTOOLSHOME/src/sander`).
 2.   Add the instruction for compilation to `$AMBERTOOLSHOME/src/sander/CMakeLists.txt`. To do this, add the following line inside the `set` of `QM_SOURCE`, `QM_API_SOURCE`, `LES_SOURCE` (together with the other `qm2_extern_*` files).
@@ -31,7 +38,58 @@ qm2_extern_socket_module.o sockets.o fsockets.o
 
 Then you can install the python package as described above.
 
-## How to use
+## How to use the interface with `sire`
+
+As described in the `sire` documentation, running a ML/MM (QM/MM) simulation requires preparing a topology file and an initial coordinate file. These can be standard Amber input files, which you can load as follows:
+
+``` python
+import sire as sr
+mols = sr.load("aqueous_uracil.crd", "aqueous_uracil.prmtop")
+```
+Next, import and load the ML models. If you want to run simulations using the models listed above, you can simply do:
+```python
+from ml_server.models import available_models
+
+model = available_models['modelvacgs_ura'](workdir=path_to_workdir).load()
+model = available_models['modelenvgs_ura'](workdir=path_to_workdir, model_vac=model).load()
+```
+With this approach, the model parameters will be downloaded automatically from https://doi.org/10.5281/zenodo.17601122. This download is required only the first time; after that, the models can be directly imported from the corresponding file. 
+If you want to apply, for instance, the $\Delta$-learning correction only to the vacuum model, you should load the models as follows:
+```python
+from ml_server.models.models_ura import ModelVacGS, ModelVacGSDelta, ModelEnvGS
+
+basemodel = ModelVacGS(workdir=path_to_workdir).load()
+model = ModelVacGS(workdir=path_to_workdir, basemodel=model).load()
+model = ModelEnvGS(workdir=path_to_workdir, model_vac=model).load()
+```
+Then, define the QM and MM regions and configure the simulation engine:
+```python
+callback = model._sire_callback
+
+qm_mols, engine = sr.qm.create_engine(
+    mols,
+    mols[0],
+    callback,
+    cutoff="999A",
+)
+
+d = qm_mols.dynamics(
+    timestep="0.5fs",
+    constraint="none",
+    qm_engine=engine,
+    platform="gpu",
+)
+```
+You can now run a minimization:
+```python
+d.minimise()
+```
+or a molecular dynamics simulation:
+```python
+d.run("100ps", energy_frequency="0.05ps", frame_frequency="0.05ps")
+```
+
+## How to use the interface with `sander`
 
 In order to run a simulation, you need to prepare your Amber simulation files as for QM/MM dynamics with `qm_theory='EXTERN'`. 
 

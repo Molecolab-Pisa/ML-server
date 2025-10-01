@@ -26,6 +26,11 @@ import numpy as np
 
 from ..io import read_inpfile, read_ptchrg, write_engrad, write_pcgrad
 
+H2kcal = 627.5094740631
+Bohr2Ang = 0.529177210903
+Nm2Bohr = 18.897261258369284
+H2kjmol = 2625.499638755248
+Nm2Ang = 10.0
 
 class BaseModel(ABC):
     """base model class
@@ -195,7 +200,7 @@ class BaseModelVac(BaseModel):
         pass
 
     def run(
-        self, coords_qm: np.ndarray = None, filebased: Optional[bool] = True
+        self, coords_qm: np.ndarray = None, filebased: Optional[bool] = True, dipole: Optional[bool] = False,
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """runs the prediction
 
@@ -221,13 +226,39 @@ class BaseModelVac(BaseModel):
             _, coords_qm, _, _, _, _ = self.read_sander_xyz()
 
         # predict energy and grads
-        energy, grads_qm = self.predict(coords_qm)
+        energy, grads_qm = self.predict(coords_qm, dipole=dipole)
 
         if filebased:
             # write to file
             self.write_engrad_pcgrad(e_tot=energy, grads_qm=grads_qm, grads_mm=None)
         else:
             return energy, grads_qm
+
+    def _sire_callback(
+        self,
+        numbers_qm: List[int],
+        charges_mm: List[float],
+        xyz_qm: List[List[float]],
+        xyz_mm: List[List[float]],
+        idx_mm: Optional[List[int]] = None,
+        dipole: Optional[bool] = False,
+        model_env: Optional[ModelState] = None
+    ) -> Tuple[float, List[List[float]], List[List[float]]]:
+    
+        num_mm_atoms = len(charges_mm)
+        
+        numbers_qm = np.array(numbers_qm)
+        charges_mm = np.array(charges_mm)
+        xyz_qm = np.array(xyz_qm)
+        xyz_mm = np.array(xyz_mm)
+    
+        charge = 0
+        
+        outputs = self.predict(xyz_qm, dipole=dipole, model_env=model_env)
+        return ( outputs[0].item() * H2kjmol , 
+                (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
+                (- np.zeros((num_mm_atoms,3)) * H2kjmol * Nm2Bohr).tolist(),
+               )
 
 
 class BaseModelEnv(BaseModel):
@@ -308,6 +339,7 @@ class BaseModelEnv(BaseModel):
         coords_mm: np.ndarray = None,
         charges_mm: np.ndarray = None,
         filebased: Optional[bool] = True,
+        dipole: Optional[bool] = False,
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """runs the prediction
 
@@ -339,10 +371,46 @@ class BaseModelEnv(BaseModel):
             _, coords_qm, _, _, coords_mm, charges_mm = self.read_sander_xyz()
 
         # predict QM/MM interaction energy and grads
-        energy, grads_qm, grads_mm = self.predict(coords_qm, coords_mm, charges_mm)
+        energy, grads_qm, grads_mm = self.predict(coords_qm, coords_mm, charges_mm, dipole=dipole)
 
         if filebased:
             # write to file
             self.write_engrad_pcgrad(e_tot=energy, grads_qm=grads_qm, grads_mm=grads_mm)
         else:
             return energy, grads_qm, grads_mm
+
+    def _sire_callback(
+        self,
+        numbers_qm: List[int],
+        charges_mm: List[float],
+        xyz_qm: List[List[float]],
+        xyz_mm: List[List[float]],
+        idx_mm: Optional[List[int]] = None,
+        dipole: Optional[bool] = False
+    ) -> Tuple[float, List[List[float]], List[List[float]]]:
+    
+        num_mm_atoms = len(charges_mm)
+        if num_mm_atoms > self._max_mm_atoms:
+            self._max_mm_atoms = num_mm_atoms
+    
+        # Pad the MM coordinates and charges arrays to avoid re-jitting.
+        if self._max_mm_atoms > num_mm_atoms:
+            num_pad = self._max_mm_atoms - num_mm_atoms
+            xyz_mm_pad = num_pad * [[0.0, 0.0, 0.0]]
+            charges_mm_pad = num_pad * [0.0]
+            xyz_mm = np.append(xyz_mm, xyz_mm_pad, axis=0)
+            charges_mm = np.append(charges_mm, charges_mm_pad)
+    
+        
+        numbers_qm = np.array(numbers_qm)
+        charges_mm = np.array(charges_mm)
+        xyz_qm = np.array(xyz_qm)
+        xyz_mm = np.array(xyz_mm)
+    
+        charge = 0
+        
+        outputs = self.predict(xyz_qm, xyz_mm, charges_mm, dipole=dipole)
+        return ( outputs[0].item() * H2kjmol , 
+                (- outputs[1] * H2kjmol * Nm2Bohr).tolist(), 
+                (- outputs[2][:num_mm_atoms] * H2kjmol * Nm2Bohr).tolist(),
+               )

@@ -17,15 +17,17 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-N-methylacetamide models for ground-state ML/MM simulations.
+Alanine dipeptide models for ground-state ML/MM simulations.
 """
 from __future__ import annotations
 
 import os
 from functools import partial
 from typing import Any, Callable, Dict, Optional, Tuple
+
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 from gpx.bijectors import Softplus
 from gpx.kernels import Polynomial, Matern52, Prod
@@ -43,7 +45,7 @@ ParameterDict = Dict[str, Parameter]
 Kernel = Any
 
 # Folder to the parameters of the available models
-AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models/NMA")
+AVAIL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "avail_models/Ala2")
 
 # Conversion constants
 H2kcal = 627.5094740631
@@ -51,9 +53,8 @@ Bohr2Ang = 0.529177210903
 conversion_charge = 1./H2kcal/Bohr2Ang
 conversion_dipole = conversion_charge/Bohr2Ang
 
-
 class ModelVacGS(BaseModelVac):
-    """Model for the QM part only (vacuum), ground state, N-methylacetamide.
+    """Model for the QM part only (vacuum), ground state, alanine dipeptide.
 
     Predicts the QM energies and QM gradients with Gaussian process regression
     using a Matern(5/2) kernel on the inverse distances descriptor.
@@ -74,17 +75,17 @@ class ModelVacGS(BaseModelVac):
 
         kernel_params = dict(lengthscale=lengthscale)
 
-        model = GPR(
-            kernel=Matern52(nperms=9),
+        model = GPR_TD(
+            kernel=Matern52(nperms=27),
             kernel_params=kernel_params,
             mean_function=zero_mean,
-            sigma=sigma,
+            sigma_targets=sigma,
+            sigma_derivs=sigma,
         )
 
         model.load(os.path.join(AVAIL_MODELS_DIR, "modelvacgs.npz"))
         model.print()
         self._model = model
-        self.constant = model.state.constant
         return self
 
     def predict(
@@ -120,7 +121,8 @@ class ModelVacGS(BaseModelVac):
         if ind_jac is None:
             ind_jac = inv_dist_jac(coords_qm)
         energy, grads = predict_vac(self._model, ind, ind_jac)
-
+        energy = energy.squeeze() / H2kcal
+        grads = grads / H2kcal * Bohr2Ang
         if dipole:
             na, _ = coords_qm.shape
             pot = jnp.zeros((1,na))
@@ -129,14 +131,11 @@ class ModelVacGS(BaseModelVac):
             dipole_vac = dipole_vac.squeeze() * conversion_dipole
             with open(os.path.join(self.workdir,'dipole.dat'),'a') as f:
                 f.write('%14.10f   %14.10f   %14.10f\n' %(dipole_vac[0],dipole_vac[1],dipole_vac[2]))
-
-        energy = ( energy.squeeze() + self.constant ) / H2kcal
-        grads = grads / H2kcal * Bohr2Ang
         return energy, grads
 
 
 class ModelEnvGS(BaseModelEnv):
-    """Environment model, ground state, N-methylacetamide 
+    """Environment model, ground state, alanine dipeptide 
 
     Predicts the energy of the QM part plus the QM/MM interaction, and the
     gradients of that energy w.r.t. the QM and MM atoms.
@@ -182,18 +181,18 @@ class ModelEnvGS(BaseModelEnv):
             )
         )
 
-        ind_dim = 66
-        n_feat = 66 + 12
+        ind_dim = 231
+        n_feat = 231 + 22
         ind_active_dims = jnp.arange(0, ind_dim)
         pot_active_dims = jnp.arange(ind_dim, n_feat)
 
-        k1 = Polynomial(no_intercept=True, active_dims=pot_active_dims, nperms=9)
-        k2 = Matern52(active_dims=ind_active_dims, nperms=9)
+        k1 = Polynomial(no_intercept=True, active_dims=pot_active_dims, nperms=27)
+        k2 = Matern52(active_dims=ind_active_dims, nperms=27)
 
         kernel_params = {"kernel1": k1.default_params(), "kernel2": k2_lengthscale}
 
 
-        k = Prod(k1, k2, nperms=9)
+        k = Prod(k1, k2, nperms=27)
 
         model = GPR_TD(
             kernel=k,
@@ -294,7 +293,6 @@ class ModelVacGSDelta(BaseModelVac):
 
     Predicts the QM energies and QM gradients with Gaussian process regression
     using a Matern(5/2) kernel on the inverse distances descriptor.
-    See __ADD_PAPER_LINK__.
     """
 
     def __init__(self, workdir: str, basemodel: ModelVacGS) -> None:
@@ -312,17 +310,17 @@ class ModelVacGSDelta(BaseModelVac):
 
         kernel_params = dict(lengthscale=lengthscale)
 
-        model = GPR(
-            kernel=Matern52(nperms=9),
+        model = GPR_TD(
+            kernel=Matern52(nperms=27),
             kernel_params=kernel_params,
             mean_function=zero_mean,
-            sigma=sigma,
+            sigma_targets=sigma,
+            sigma_derivs=sigma,
         )
 
         model.load(os.path.join(AVAIL_MODELS_DIR, "modelvacgsdelta.npz"))
         model.print()
         self._model = model
-        self.constant = model.state.constant
         return self
 
     def predict(
@@ -359,7 +357,7 @@ class ModelVacGSDelta(BaseModelVac):
             ind_jac = inv_dist_jac(coords_qm)
         energy, grads = self._basemodel.predict(coords_qm, ind, ind_jac)
         delta_energy, delta_grads = predict_vac(self._model, ind, ind_jac)
-        delta_energy = ( delta_energy.squeeze() + self.constant ) / H2kcal
+        delta_energy = delta_energy.squeeze() / H2kcal
         delta_grads = delta_grads / H2kcal * Bohr2Ang
 
         if dipole:
@@ -393,11 +391,14 @@ def _predict_vac(
     jaccoef: ArrayLike,
     jacobian: ArrayLike,
     mu: ArrayLike,
+    c_energies: ArrayLike,
 ) -> Array:
     lengthscale = params["lengthscale"].value
-    nperms = 9
+    nperms = 27
 
-    nf = x1.shape[1]
+    nsp1, nf1 = x1.shape
+    ns1 = int(nsp1/nperms)
+    ns2, nf2 = x2.shape
     z1 = x1 / lengthscale
     z2 = x2 / lengthscale
     diff = jnp.sqrt(5.0) * (z1[:, jnp.newaxis] - z2)
@@ -408,19 +409,29 @@ def _predict_vac(
     const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d) * expd
     d01const = (5.0 / (3.0 * lengthscale**2)) * expd
 
+    mat52 = (1.0 + d + d**2 / 3.0) * expd
+    mat52 = mat52.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
+
     diff_jc = jnp.einsum("stf,sf->st", diff, jaccoef)
     diff_jt = jnp.einsum("stf,tfv->stv", diff, jacobian)
 
     d0k_jc = -const * diff_jc
+    d0k_jc = d0k_jc.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+
+    d1k_jt = -jnp.einsum("st,stv->stv", -const, diff_jt)
+    d1k_jt = d1k_jt.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms 
 
     d01k_jc_jt = jnp.einsum("st,st,stv->stv", -d01const, diff_jc, diff_jt)
     diagonal = d01const * (1.0 + d)
-    diagonal = diagonal[:, :, jnp.newaxis].repeat(nf, axis=2)
+    diagonal = diagonal[:, :, jnp.newaxis].repeat(nf1, axis=2)
     d01k_jc_jt += jnp.einsum("sf,stf,tfv->stv", jaccoef, diagonal, jacobian)
+    d01k_jc_jt = d01k_jc_jt.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms 
 
-    energy = mu + jnp.einsum("st->t", d0k_jc) / nperms
+    energy = mu + jnp.einsum('st,s->t', mat52, c_energies) 
+    energy += jnp.einsum("st->t", d0k_jc) 
 
-    grads = jnp.einsum("stv->tv", d01k_jc_jt) / nperms
+    grads = jnp.einsum('stv,s->tv', d1k_jt, c_energies)
+    grads += jnp.einsum("stv->tv", d01k_jc_jt) 
 
     return energy, grads.reshape(-1, 3)
 
@@ -435,101 +446,9 @@ def predict_vac(model: ModelState, x: ArrayLike, jacobian: ArrayLike):
         jaccoef=model.state.jaccoef,
         jacobian=jacobian,
         mu=model.state.mu,
-    )
-
-
-def _predict_dipole(
-    x1: ArrayLike,
-    x2: ArrayLike,
-    params: Dict[str, Parameter],
-    jaccoef1: ArrayLike,
-    jaccoef2: ArrayLike,
-    c_energies: ArrayLike,
-    active_dims_m: ArrayLike,
-    active_dims_p: ArrayLike,
-    jacobian_chg: ArrayLike,
-) -> Array:
-    nperms = 9
-    nsp1, nf1 = x1.shape
-    ns1 = int(nsp1/nperms)
-    ns2, nf2 = x2.shape
-    nact_p = active_dims_p.shape[0]
-
-    z1_p = x1[:, active_dims_p]
-    z2_p = x2[:, active_dims_p]
-    jaccoef1_p = jaccoef1[:, active_dims_p]
-    jaccoef2_p = jaccoef2[:, active_dims_p]
-
-    offset = params["kernel1"]["offset"].value
-    degree = params["kernel1"]["degree"].value
-
-    const1 = degree * (offset + z1_p @ z2_p.T) ** (degree - 1)
-    d1k_p = jnp.einsum("st,se->ste", const1, z1_p)
-    d1k_p = d1k_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
-    tmp1 = jnp.einsum(
-        "st,sfte->sfte",
-        const1,
-        jnp.tile(jnp.eye((nact_p)), (nsp1, ns2)).reshape(nsp1, nact_p, ns2, nact_p),
-    )
-    const2 = (degree * (degree - 1) * (offset + z1_p @ z2_p.T) ** (degree - 2))
-    tmp2 = jnp.einsum("sf,st,te->setf", z1_p, const2, z2_p)
-    d01k_jc1_p = jnp.einsum("sf,sfte->ste",jaccoef1_p, tmp1 + tmp2)
-    d01k_jc1_p = d01k_jc1_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
-    d01k_jc2_p = jnp.einsum("sf,sfte->ste",jaccoef2_p, tmp1 + tmp2)
-    d01k_jc2_p = d01k_jc2_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
-
-    d1k_jtchg_p = jnp.einsum("ste,tev->stv", d1k_p, jacobian_chg)
-    d01k_jc1_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc1_p, jacobian_chg)
-    d01k_jc2_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc2_p, jacobian_chg)
-
-    lengthscale = params["kernel2"]["lengthscale"].value
-
-    nact_m = active_dims_m.shape[0]
-    z1_m = x1[:, active_dims_m] / lengthscale
-    z2_m = x2[:, active_dims_m] / lengthscale
-    jaccoef1_m = jaccoef1[:, active_dims_m]
-    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
-    d2_m = squared_distances(z1_m, z2_m)
-    d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
-    expd_m = jnp.exp(-d_m)
-
-    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d_m) * expd_m
-
-    mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
-    mat52 = mat52.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
-    diff_jc1 = jnp.einsum("stf,sf->st", diff_m, jaccoef1_m)
-    d0k_jc1_m = -const * diff_jc1
-    d0k_jc1_m = d0k_jc1_m.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
-    
-    dipole = jnp.einsum('stv,st,s->tv', d1k_jtchg_p, mat52, c_energies)
-    dipole += jnp.einsum('stv,st->tv', d1k_jtchg_p, d0k_jc1_m)
-    dipole += jnp.einsum('stv,st->tv', d01k_jc1_jtchg_p, mat52)
-    dipole += jnp.einsum('stv,st->tv', d01k_jc2_jtchg_p, mat52)
-    
-    return dipole.reshape(-1, 3)
-
-@partial(jit, static_argnums=0)
-def predict_dipole(
-    model: ModelState,
-    x: ArrayLike,
-    jacobian_chg: ArrayLike = None,
-):
-    ind_dim = 66
-    n_feat = 66 + 12
-    ind_active_dims = jnp.arange(0, ind_dim)
-    pot_active_dims = jnp.arange(ind_dim, n_feat)
-    kernel_params = model.state.params["kernel_params"]
-    return _predict_dipole(
-        x1=model.state.x_train,
-        x2=x,
-        params=kernel_params,
-        jaccoef1=model.state.jaccoef,
-        jaccoef2=model.state.jaccoef_2,
         c_energies=model.state.c_targets,
-        active_dims_m=ind_active_dims,
-        active_dims_p=pot_active_dims,
-        jacobian_chg=jacobian_chg,
     )
+
 
 def _predict_env(
     x1: ArrayLike,
@@ -547,7 +466,7 @@ def _predict_env(
     jacobian_chg: ArrayLike,
 ) -> Array:
 
-    nperms = 9
+    nperms = 27
     nsp1, nf1 = x1.shape
     ns1 = int(nsp1/nperms)
     ns2, nf2 = x2.shape
@@ -656,8 +575,6 @@ def _predict_env(
         
         return energy, grads_qm.reshape(-1, 3), grads_mm.reshape(-1, 3)
 
-
-
 @partial(jit, static_argnums=(0,4))
 def predict_env(
     model: ModelState,
@@ -667,8 +584,8 @@ def predict_env(
     dipole: bool = False,
     jacobian_chg: ArrayLike = None,
 ):
-    ind_dim = 66
-    n_feat = 66 + 12
+    ind_dim = 231
+    n_feat = 231 + 22
     ind_active_dims = jnp.arange(0, ind_dim)
     pot_active_dims = jnp.arange(ind_dim, n_feat)
     kernel_params = model.state.params["kernel_params"]
@@ -687,4 +604,98 @@ def predict_env(
         dipole=dipole,
         jacobian_chg=jacobian_chg,
     )
+
+def _predict_dipole(
+    x1: ArrayLike,
+    x2: ArrayLike,
+    params: Dict[str, Parameter],
+    jaccoef1: ArrayLike,
+    jaccoef2: ArrayLike,
+    c_energies: ArrayLike,
+    active_dims_m: ArrayLike,
+    active_dims_p: ArrayLike,
+    jacobian_chg: ArrayLike,
+) -> Array:
+    nperms = 27
+    nsp1, nf1 = x1.shape
+    ns1 = int(nsp1/nperms)
+    ns2, nf2 = x2.shape
+    nact_p = active_dims_p.shape[0]
+
+    z1_p = x1[:, active_dims_p]
+    z2_p = x2[:, active_dims_p]
+    jaccoef1_p = jaccoef1[:, active_dims_p]
+    jaccoef2_p = jaccoef2[:, active_dims_p]
+
+    offset = params["kernel1"]["offset"].value
+    degree = params["kernel1"]["degree"].value
+
+    const1 = degree * (offset + z1_p @ z2_p.T) ** (degree - 1)
+    d1k_p = jnp.einsum("st,se->ste", const1, z1_p)
+    d1k_p = d1k_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    tmp1 = jnp.einsum(
+        "st,sfte->sfte",
+        const1,
+        jnp.tile(jnp.eye((nact_p)), (nsp1, ns2)).reshape(nsp1, nact_p, ns2, nact_p),
+    )
+    const2 = (degree * (degree - 1) * (offset + z1_p @ z2_p.T) ** (degree - 2))
+    tmp2 = jnp.einsum("sf,st,te->setf", z1_p, const2, z2_p)
+    d01k_jc1_p = jnp.einsum("sf,sfte->ste",jaccoef1_p, tmp1 + tmp2)
+    d01k_jc1_p = d01k_jc1_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+    d01k_jc2_p = jnp.einsum("sf,sfte->ste",jaccoef2_p, tmp1 + tmp2)
+    d01k_jc2_p = d01k_jc2_p.reshape(ns1,nperms,ns2,-1).sum(axis=1) / nperms
+
+    d1k_jtchg_p = jnp.einsum("ste,tev->stv", d1k_p, jacobian_chg)
+    d01k_jc1_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc1_p, jacobian_chg)
+    d01k_jc2_jtchg_p = jnp.einsum("ste,tev->stv", d01k_jc2_p, jacobian_chg)
+
+    lengthscale = params["kernel2"]["lengthscale"].value
+
+    nact_m = active_dims_m.shape[0]
+    z1_m = x1[:, active_dims_m] / lengthscale
+    z2_m = x2[:, active_dims_m] / lengthscale
+    jaccoef1_m = jaccoef1[:, active_dims_m]
+    diff_m = jnp.sqrt(5.0) * (z1_m[:, jnp.newaxis] - z2_m)
+    d2_m = squared_distances(z1_m, z2_m)
+    d_m = jnp.sqrt(5.0) * jnp.sqrt(jnp.maximum(d2_m, 1e-36))
+    expd_m = jnp.exp(-d_m)
+
+    const = (jnp.sqrt(5.0) / (3.0 * lengthscale)) * (1 + d_m) * expd_m
+
+    mat52 = (1.0 + d_m + d_m**2 / 3.0) * expd_m
+    mat52 = mat52.reshape(ns1,nperms,ns2).sum(axis=1) / nperms 
+    diff_jc1 = jnp.einsum("stf,sf->st", diff_m, jaccoef1_m)
+    d0k_jc1_m = -const * diff_jc1
+    d0k_jc1_m = d0k_jc1_m.reshape(ns1,nperms,ns2).sum(axis=1) / nperms
+    
+    dipole = jnp.einsum('stv,st,s->tv', d1k_jtchg_p, mat52, c_energies)
+    dipole += jnp.einsum('stv,st->tv', d1k_jtchg_p, d0k_jc1_m)
+    dipole += jnp.einsum('stv,st->tv', d01k_jc1_jtchg_p, mat52)
+    dipole += jnp.einsum('stv,st->tv', d01k_jc2_jtchg_p, mat52)
+    
+    return dipole.reshape(-1, 3)
+
+@partial(jit, static_argnums=0)
+def predict_dipole(
+    model: ModelState,
+    x: ArrayLike,
+    jacobian_chg: ArrayLike = None,
+):
+    ind_dim = 231
+    n_feat = 231 + 22
+    ind_active_dims = jnp.arange(0, ind_dim)
+    pot_active_dims = jnp.arange(ind_dim, n_feat)
+    kernel_params = model.state.params["kernel_params"]
+    return _predict_dipole(
+        x1=model.state.x_train,
+        x2=x,
+        params=kernel_params,
+        jaccoef1=model.state.jaccoef,
+        jaccoef2=model.state.jaccoef_2,
+        c_energies=model.state.c_targets,
+        active_dims_m=ind_active_dims,
+        active_dims_p=pot_active_dims,
+        jacobian_chg=jacobian_chg,
+    )
+
 
