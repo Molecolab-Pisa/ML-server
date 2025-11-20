@@ -73,7 +73,7 @@ def server_cli_parse():
         required=True,
         default=None,
         type=str,
-        help="QM model string selector (e.g., model_vac_gs)",
+        help="QM model string selector (e.g., modelvacgs_ura)",
     )
 
     # optional arguments
@@ -84,7 +84,23 @@ def server_cli_parse():
         required=None,
         default=None,
         type=str,
-        help="Environment model string selector (e.g., model_env_gs)",
+        help="Environment model string selector (e.g., modelenvgs_ura)",
+    )
+
+    optional.add_argument(
+        "--model_vac_delta",
+        required=None,
+        default=None,
+        type=str,
+        help="Environment model string selector (e.g., modelvacgsdelta_ura)",
+    )
+
+    optional.add_argument(
+        "--model_env_delta",
+        required=None,
+        default=None,
+        type=str,
+        help="Environment model string selector (e.g., modelenvgsdelta_ura)",
     )
 
     optional.add_argument(
@@ -92,6 +108,13 @@ def server_cli_parse():
         action="store_true",
         required=None,
         help="Use file-based interface",
+    )
+
+    optional.add_argument(
+        "--dipole",
+        action="store_true",
+        required=None,
+        help="Print dipole moments",
     )
 
     optional.add_argument(
@@ -133,6 +156,7 @@ def server():
     import struct
 
     import numpy as np
+    import jax.numpy as jnp
 
     from .models import available_models
 
@@ -162,14 +186,26 @@ def server():
         # load the requested model
         if args.model_vac not in available_models.keys():
             raise ValueError("requested QM model is not available")
-        model = available_models[args.model_vac](args.workdir).load()
+        model_vac = available_models[args.model_vac](args.workdir).load()
+
+        if args.model_vac_delta is not None:
+            if args.model_vac_delta not in available_models.keys():
+                raise ValueError("requested QM model is not available")
+            model_vac = available_models[args.model_vac_delta](args.workdir, basemodel=model_vac).load()
 
         if args.model_env is not None:
             if args.model_env not in available_models.keys():
                 raise ValueError("requested environment model is not available")
             model = available_models[args.model_env](
-                args.workdir, model_vac=model
+                args.workdir, model_vac=model_vac
             ).load()
+        else:
+            model = model_vac
+
+        if args.model_env_delta is not None:
+            if args.model_env_delta not in available_models.keys():
+                raise ValueError("requested environment model is not available")
+            model = available_models[args.model_env_delta](args.workdir, model_vac=model_vac, basemodel=model).load()
 
         # keep listening and accepting connections from clients
         while True:
@@ -195,7 +231,7 @@ def server():
                         if cmd == "model-run":
                             logprint("Requested calculation by sander.\n")
                             # read input, predict, and write to file
-                            model.run(filebased=True)
+                            model.run(filebased=True, dipole=args.dipole)
                             conn.sendall(b"model-fin   ")
 
                         elif cmd == "server-stop":
@@ -217,12 +253,17 @@ def server():
 
                             if nmm > 0:
 
+                                logprint(str(nmm))
                                 sh_mm = (nmm, 4)
                                 mmcoordchg = np.zeros(sh_mm, dtype)
                                 mmcoordchg = recvall(conn, mmcoordchg)
 
-                                coords_mm = mmcoordchg[:, :3]
-                                charges_mm = mmcoordchg[:, 3]
+                                if nmm > model._max_mm_atoms:
+                                    model._max_mm_atoms = nmm
+                                coords_mm = jnp.zeros((model._max_mm_atoms, 3),dtype)
+                                charges_mm = jnp.zeros((model._max_mm_atoms,),dtype)
+                                coords_mm = coords_mm.at[:nmm].set(mmcoordchg[:, :3])
+                                charges_mm = charges_mm.at[:nmm].set(mmcoordchg[:, 3])
 
                                 # run the prediction
                                 energy, grad_qm, grad_mm = model.run(
@@ -230,10 +271,12 @@ def server():
                                     coords_mm,
                                     charges_mm,
                                     filebased=False,
+                                    dipole=args.dipole,
                                 )
-                                conn.sendall(grad_mm)
+                                grad_mm_send = grad_mm[:nmm]
+                                conn.sendall(grad_mm_send)
                             else:
-                                energy, grad_qm = model.run(coords_qm, filebased=False)
+                                energy, grad_qm = model.run(coords_qm, filebased=False, dipole=args.dipole)
 
                             conn.sendall(grad_qm)
                             conn.sendall(struct.pack("<d", energy))
