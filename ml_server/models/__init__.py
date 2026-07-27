@@ -50,7 +50,7 @@ def _download_ura_models(model_name):
 
     if not os.path.exists(os.path.join(path,"avail_models/Uracil")):
         print("Downloading the models' data in ml_server/models/avail_models/Uracil/")
-        urllib.request.urlretrieve("https://zenodo.org/records/17601122/files/models_uracil.tar.gz?download=1", os.path.join(path, "models_uracil.tar.gz"))
+        urllib.request.urlretrieve("https://zenodo.org/records/18391996/files/models_uracil.tar.gz?download=1", os.path.join(path, "models_uracil.tar.gz"))
         print("Decompressing...")
         tar = tarfile.open(os.path.join(path,"models_uracil.tar.gz"))
         tar.extractall(path=os.path.join(path,"avail_models"))
@@ -66,7 +66,7 @@ def _download_nma_models(model_name):
 
     if not os.path.exists(os.path.join(path,"avail_models/NMA")):
         print("Downloading the models' data in ml_server/models/avail_models/NMA/")
-        urllib.request.urlretrieve("https://zenodo.org/records/17601122/files/models_nmethylacetamide.tar.gz?download=1", os.path.join(path, "models_nmethylacetamide.tar.gz"))
+        urllib.request.urlretrieve("https://zenodo.org/records/18391996/files/models_nmethylacetamide.tar.gz?download=1", os.path.join(path, "models_nmethylacetamide.tar.gz"))
         print("Decompressing...")
         tar = tarfile.open(os.path.join(path,"models_nmethylacetamide.tar.gz"))
         tar.extractall(path=os.path.join(path,"avail_models"))
@@ -82,7 +82,7 @@ def _download_ala2_models(model_name):
 
     if not os.path.exists(os.path.join(path,"avail_models/Ala2")):
         print("Downloading the models' data in ml_server/models/avail_models/Ala2/")
-        urllib.request.urlretrieve("https://zenodo.org/records/17601122/files/models_alanine_dipeptide.tar.gz?download=1", os.path.join(path, "models_alanine_dipeptide.tar.gz"))
+        urllib.request.urlretrieve("https://zenodo.org/records/18391996/files/models_alanine_dipeptide.tar.gz?download=1", os.path.join(path, "models_alanine_dipeptide.tar.gz"))
         print("Decompressing...")
         tar = tarfile.open(os.path.join(path,"models_alanine_dipeptide.tar.gz"))
         tar.extractall(path=os.path.join(path,"avail_models"))
@@ -90,6 +90,23 @@ def _download_ala2_models(model_name):
         os.remove(os.path.join(path,"models_alanine_dipeptide.tar.gz"))
         os.rename(os.path.join(path,"avail_models/models"), os.path.join(path,"avail_models/Ala2"))
     return cls
+
+
+def _download_RAP1mace_models(model_name):
+    module = importlib.import_module(".models_RAP1mace", package=__name__)
+    cls = getattr(module, model_name)
+
+    if not os.path.exists(os.path.join(path,"avail_models/RAP1mace")):
+        print("Downloading the models' data in ml_server/models/avail_models/RAP1mace/")
+        urllib.request.urlretrieve("https://zenodo.org/records/21414244/files/avail_models.tar.gz?download=1", os.path.join(path, "avail_models.tar.gz"))
+        print("Decompressing...")
+        tar = tarfile.open(os.path.join(path,"avail_models.tar.gz"))
+        tar.extractall(path=os.path.join(path,"avail_models"))
+        tar.close()
+        os.remove(os.path.join(path,"avail_models.tar.gz"))
+        os.rename(os.path.join(path,"avail_models/avail_models"), os.path.join(path,"avail_models/RAP1mace"))
+    return cls
+
 
 
 class LazyDict(Mapping):
@@ -130,6 +147,10 @@ available_models = LazyDict({
     "modelvacgs_ala2": (_download_ala2_models, "ModelVacGS"),
     "modelenvgs_ala2": (_download_ala2_models, "ModelEnvGS"),
     "modelvacgsdelta_ala2": (_download_ala2_models, "ModelVacGSDelta"),
+
+    "modelvacgs_RAP1mace" : (_download_RAP1mace_models, "ModelVacGS"),
+    "modelenvgs_RAP1mace" : (_download_RAP1mace_models, "ModelEnvGS"),
+    "modelshiftgs_RAP1mace" : (_download_RAP1mace_models, "ModelShiftGS"),
 })
 
 
