@@ -245,7 +245,8 @@ def server():
                             # receive data via socket
                             system_data = np.zeros((2, 1), dtype)
                             system_data = recvall(conn, system_data)
-                            nqm, nmm = int(system_data[0]), int(system_data[1])
+                            
+                            nqm, nmm = int(system_data[0,0]), int(system_data[1,0])
 
                             sh_qm = (nqm, 3)
                             coords_qm = np.zeros(sh_qm, dtype)

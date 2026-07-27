@@ -63,6 +63,6 @@ def recvall(sock, dest):
         bpos += bpart
 
     if np.isscalar(dest):
-        return np.fromstring(buf[0:blen], dest.dtype)[0]
+        return np.frombuffer(buf[0:blen], dtype=dest.dtype)[0]
     else:
-        return np.fromstring(buf[0:blen], dest.dtype).reshape(dest.shape)
+        return np.frombuffer(buf[0:blen], dtype=dest.dtype).reshape(dest.shape)
